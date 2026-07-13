@@ -1,0 +1,13 @@
+pandas
+numpy
+matplotlib
+pyarrow
+ijson
+scikit-learn
+streamlit
+dash
+plotly
+duckdb
+reportlab
+# Opcional para --engine pyspark/auto:
+# pyspark
