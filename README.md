@@ -1,6 +1,6 @@
 # Analise Eleitoral Brasileira com Dados Abertos do TSE
 
-Este projeto organiza, limpa, correlaciona, analisa e simula dados eleitorais brasileiros a partir dos arquivos publicos disponibilizados pelo Tribunal Superior Eleitoral (TSE). O objetivo e criar uma base persistente em Parquet, estruturada em camadas `bronze`, `prata` e `ouro`, para permitir analises eleitorais por Brasil, UF, municipio, zona, secao eleitoral, partido, candidato e perfil do eleitorado.
+Este projeto cria um banco eleitoral em Parquet a partir de JSON/JSONL derivados dos Dados Abertos do TSE, organiza os dados em camadas `bronze`, `prata` e `ouro`, gera analises eleitorais, dashboards, graficos, relatorios em PDF e simulacoes de cenarios para 2026.
 
 A fonte declarada dos dados e o Portal de Dados Abertos do TSE:
 
@@ -8,88 +8,227 @@ A fonte declarada dos dados e o Portal de Dados Abertos do TSE:
 https://dadosabertos.tse.jus.br/
 ```
 
-Segundo o proprio portal, ele disponibiliza dados gerados ou custodiados pelo TSE para acesso, tratamento e compartilhamento pela sociedade. O portal substituiu o antigo Repositorio de Dados Eleitorais, descontinuado em janeiro de 2022.
+O projeto foi desenhado para arquivos grandes. A regra principal e: os JSONs brutos sao lidos uma vez para criar Parquet; depois disso, as analises, dashboards e PDFs devem consultar os Parquets tratados.
 
-## Objetivo do Projeto
+## O Que Este Projeto Responde
 
-O projeto foi pensado para responder perguntas eleitorais usando dados agregados oficiais:
+O projeto busca responder, em diferentes niveis territoriais:
 
-- quem sao os eleitores por ano, UF, municipio e secao;
-- quais perfis eleitorais predominam em cada territorio;
-- qual partido ou candidato ganhou em cada secao eleitoral;
-- como a vitoria aconteceu, usando votos, share, comparecimento, abstencao e distribuicao territorial;
-- qual perfil de eleitorado esta associado a partidos e candidatos, sempre por proxy territorial;
-- como o perfil do eleitorado evolui entre anos eleitorais;
-- quais clusters de eleitores aparecem por estado, municipio e Brasil;
-- qual cenario de eleitores e votos por partido pode ser simulado para 2026;
-- como consultar os resultados em dashboard, cards, graficos e mapas.
+- quem sao os eleitores por ano, Brasil, UF, municipio, zona e secao;
+- qual o perfil predominante do eleitorado: sexo/genero, faixa etaria, escolaridade, estado civil e raca/cor quando existir;
+- como votaram os territorios por partido e candidato;
+- qual perfil de eleitorado aparece associado a cada partido ou candidato;
+- como o perfil eleitoral evolui entre anos;
+- quais perfis aparecem em clusters eleitorais;
+- qual cenario possivel de voto por partido pode ser simulado para 2026;
+- como consultar tudo em dashboard, cards, mapas, graficos, HTML e PDF.
 
-Importante: os arquivos do TSE usados aqui sao dados agregados. O projeto nao identifica pessoas individualmente, nao prova voto individual e nao afirma motivacao psicologica do eleitor. Quando correlaciona perfil de eleitorado com votos, ele usa aproximacao ecologica por territorio, secao, municipio e ano.
+Importante: os dados do TSE usados aqui sao agregados. O projeto nao identifica pessoas individualmente e nao prova voto individual. Toda relacao entre perfil de eleitorado e voto e uma aproximacao territorial, tambem chamada de proxy ecologica.
 
-## Visao Geral da Esteira de Dados
+## Visao Rapida Para Quem So Quer Rodar
 
-A esteira completa do projeto segue este fluxo:
+Use estes comandos no WSL, dentro da raiz do projeto:
+
+```bash
+cd /mnt/c/Users/kevin/OneDrive/Escritorio/Analise_Eleitoral
+```
+
+Instale as dependencias:
+
+```bash
+pip install -r scripts/pipeline_eleitoral_json/requirements.txt
+```
+
+Crie o banco `bronze` + `prata` a partir dos JSONs:
+
+```bash
+python3 scripts/run_pipeline_eleitoral_json.py dados/json \
+  --modo banco \
+  --banco-out dados/banco_eleitoral \
+  --resume \
+  --banco-workers 8 \
+  --banco-workers-large-files 8 \
+  --banco-chunk-rows 10000
+```
+
+Teste rapido de criacao `bronze` + `prata`, processando poucos arquivos:
+
+```bash
+python3 scripts/run_pipeline_eleitoral_json.py dados/json \
+  --modo banco \
+  --banco-out dados/banco_eleitoral \
+  --resume \
+  --banco-max-files 5 \
+  --banco-workers 2 \
+  --banco-workers-large-files 1 \
+  --banco-chunk-rows 5000
+```
+
+Gere uma analise rapida para testar o front, com todos os estados e Brasil, sem municipal detalhado:
+
+```bash
+python3 scripts/run_pipeline_eleitoral_json.py dados/banco_eleitoral \
+  --modo analise_banco \
+  --banco-out dados/banco_eleitoral \
+  --resume \
+  --banco-modalidade-analise estados_brasil \
+  --banco-somente-estados-brasil \
+  --banco-skip-heavy-analyses \
+  --banco-skip-clusters \
+  --sem-clustering \
+  --banco-ouro-workers 1 \
+  --banco-duckdb-threads 1 \
+  --cenarios 100
+```
+
+Rode a API:
+
+```bash
+python3 scripts/dashboard_api_eleitoral.py \
+  --run dados/banco_eleitoral \
+  --host 0.0.0.0 \
+  --port 8055 \
+  --engine polars
+```
+
+Em outro terminal, rode o dashboard Streamlit:
+
+```bash
+streamlit run scripts/dashboard_streamlit_api_eleitoral.py -- \
+  --api http://localhost:8055
+```
+
+Abra no navegador:
+
+```text
+http://localhost:8501
+```
+
+## Fluxo Geral Dos Dados
+
+O fluxo completo e:
 
 ```text
 Dados Abertos do TSE
-  -> downloads oficiais em ZIP
-  -> extracao dos CSVs oficiais
-  -> conversao dos CSVs para JSON/JSONL
-  -> leitura streaming dos JSON/JSONL
-  -> banco Parquet em camadas bronze/prata/ouro
-  -> analises, clusters, dashboards e simulacao 2026
+  -> arquivos ZIP oficiais
+  -> CSVs extraidos
+  -> JSON/JSONL preparados
+  -> banco Parquet bronze/prata
+  -> camada ouro analitica
+  -> dashboard/API/PDF/simulacao
 ```
 
-O pipeline principal deste repositorio trabalha a partir dos JSON/JSONL ja preparados. A etapa anterior, de preparacao, consiste em baixar os ZIPs do TSE, extrair os CSVs e converter esses CSVs para JSON ou JSONL. Depois disso, o projeto transforma os JSONs em Parquet e constroi o banco eleitoral.
+Este repositorio trabalha principalmente a partir de `dados/json`, onde devem estar os JSON/JSONL/NDJSON ja preparados. A conversao ZIP -> CSV -> JSON pode ser feita antes, fora do pipeline principal.
 
-## Origem dos Dados
-
-Os dados sao provenientes dos conjuntos publicos do TSE, principalmente relacionados a:
-
-- eleitorado;
-- perfil do eleitorado;
-- locais de votacao;
-- resultados de votacao por secao, municipio, zona e cargo;
-- votacao por candidato;
-- votacao por partido;
-- candidatos;
-- vagas;
-- coligacoes;
-- situacao ou motivo de cassacao quando disponivel;
-- transferencias temporarias e outras tabelas eleitorais presentes na base.
-
-Os nomes dos arquivos costumam conter o ano eleitoral, por exemplo `2014`, `2018`, `2022` ou `2024`. O pipeline extrai esse ano do nome do arquivo quando o campo de ano nao esta explicitamente padronizado nos dados.
-
-## Metodologia de Extracao
-
-A metodologia de extracao foi desenhada para lidar com arquivos muito grandes e formatos heterogeneos.
-
-1. Os arquivos originais sao obtidos no Portal de Dados Abertos do TSE, geralmente em arquivos ZIP.
-2. Cada ZIP e extraido para recuperar os CSVs oficiais.
-3. Os CSVs sao convertidos para JSON/JSONL, preservando os campos originais.
-4. O pipeline le os JSON/JSONL sem carregar o arquivo inteiro na memoria sempre que possivel.
-5. Os registros sao normalizados para colunas canonicas.
-6. Os dados sao gravados em Parquet, particionados por dominio, UF, ano e codigos eleitorais.
-7. Depois da base limpa criada, as analises passam a usar os Parquets tratados, nao os JSONs brutos.
-
-Essa estrategia reduz o risco de estourar memoria em arquivos de dezenas de gigabytes.
-
-## Metodologia de Organizacao dos Dados
-
-O projeto separa os dados por dominio analitico:
+## Pastas Principais
 
 ```text
-eleitorado
-candidatos
-resultados_votos
-outros/metadados
+Analise_Eleitoral/
+  dados/
+    json/
+      arquivos JSON/JSONL/NDJSON de entrada
+    banco_eleitoral/
+      bronze/
+      prata/
+      ouro/
+      preditivo_2026/
+      logs/
+      metadados/
+  resultados/
+    dashboards, HTMLs, PDFs e runs antigos
+  scripts/
+    pipeline e ferramentas de dashboard/PDF
+  README.md
 ```
 
-Cada dominio recebe colunas canonicas para facilitar correlacoes.
+## Arquitetura Do Banco
 
-### Chaves principais
+### Camada Bronze
 
-As principais chaves de correlacao sao:
+A `bronze` guarda dados em Parquet ainda proximos do arquivo original, mas ja normalizados o bastante para consulta. Ela serve para auditoria e preservacao.
+
+Exemplo:
+
+```text
+dados/banco_eleitoral/bronze/
+  eleitorado/schema_id=<hash>/uf=SP/shard=<arquivo>/part-000000.parquet
+```
+
+### Camada Prata
+
+A `prata` e a camada limpa por dominio. Ela mantem somente o que interessa para analise, correlacao e agregacao.
+
+Exemplo:
+
+```text
+dados/banco_eleitoral/prata/
+  eleitorado/uf=SP/shard=<arquivo>/part-000000.parquet
+  candidatos/uf=SP/shard=<arquivo>/part-000000.parquet
+  resultados_votos/uf=SP/shard=<arquivo>/part-000000.parquet
+```
+
+Dominios principais:
+
+- `eleitorado`: perfil do eleitor, eleitorado por local/secao, sexo/genero, faixa etaria, escolaridade, estado civil, raca/cor quando houver;
+- `resultados_votos`: votos, partido, candidato, cargo, turno, municipio, zona e secao;
+- `candidatos`: dados de candidatos, partido, cargo, municipio, sexo/genero, escolaridade, idade, estado civil quando disponivel;
+- `outros`: arquivos que nao entram diretamente nas analises principais.
+
+### Camada Ouro
+
+A `ouro` contem os dados prontos para dashboard, PDF e simulacao.
+
+Estrutura atual:
+
+```text
+dados/banco_eleitoral/ouro/
+  municipal/
+    resumo/
+    perfil_eleitor/
+    resultado_partido/
+    perfil_partido/
+    resultado_candidato/
+    perfil_candidato/
+    clusters_eleitores/
+    clusters_eleitores_resultado/
+  estadual/
+    resumo/
+    perfil_eleitor/
+    resultado_partido/
+    perfil_partido/
+    resultado_candidato/
+    perfil_candidato/
+    clusters_eleitores/
+    clusters_eleitores_resultado/
+  brasil/
+    resumo/
+    perfil_eleitor/
+    resultado_partido/
+    perfil_partido/
+    resultado_candidato/
+    perfil_candidato/
+    clusters_eleitores/
+    clusters_eleitores_resultado/
+  timeline_uf/
+  timeline_municipal/
+  timeline_nacional.parquet
+  perfil_eleitor_por_ano/
+  perfil_eleitor_por_partido/
+  perfil_eleitor_por_candidato/
+  top10_perfis_federacao_estado_municipio/
+```
+
+A ideia correta da `ouro` e:
+
+1. gerar resultados menores;
+2. reaproveitar os resultados menores;
+3. subir de municipio para estado;
+4. subir de estado para Brasil;
+5. evitar varrer os dados brutos repetidamente.
+
+## Campos Mais Importantes
+
+Chaves eleitorais:
 
 ```text
 ano
@@ -106,90 +245,7 @@ nr_votavel
 sq_candidato
 ```
 
-Para correlacionar eleitorado e resultados, as chaves mais importantes sao:
-
-```text
-ano + uf + cd_municipio + zona + secao + cargo + turno
-```
-
-Quando a analise precisa ser mais leve, ela usa niveis agregados:
-
-```text
-Brasil
-UF
-municipio
-zona
-secao
-```
-
-## Arquitetura Bronze, Prata e Ouro
-
-O caminho recomendado do projeto e o modo banco:
-
-```text
-dados/
-  json/
-    arquivos JSON/JSONL preparados a partir dos CSVs do TSE
-  banco_eleitoral/
-    bronze/
-    prata/
-    ouro/
-    preditivo_2026/
-    logs/
-    metadados/
-```
-
-### Camada Bronze
-
-A camada `bronze` guarda os dados normalizados em Parquet, ainda proximos ao formato original.
-
-Ela organiza arquivos por:
-
-```text
-dominio
-schema_id
-uf
-shard
-```
-
-Exemplo:
-
-```text
-dados/banco_eleitoral/bronze/
-  eleitorado/schema_id=<hash>/uf=SP/shard=<arquivo>/part-000000.parquet
-```
-
-Objetivo da bronze:
-
-- preservar o maximo possivel do dado original;
-- agrupar documentos com campos parecidos;
-- extrair `ano` do nome do arquivo quando necessario;
-- permitir auditoria do que foi lido;
-- criar uma base intermediaria em Parquet.
-
-### Camada Prata
-
-A camada `prata` limpa e padroniza os dados por dominio.
-
-Exemplo:
-
-```text
-dados/banco_eleitoral/prata/
-  eleitorado/uf=SP/shard=<arquivo>/part-000000.parquet
-  candidatos/uf=SP/shard=<arquivo>/part-000000.parquet
-  resultados_votos/uf=SP/shard=<arquivo>/part-000000.parquet
-```
-
-Objetivo da prata:
-
-- reduzir colunas irrelevantes;
-- manter codigos de correlacao;
-- manter variaveis discretas importantes;
-- padronizar nomes de municipio, UF, zona e secao;
-- manter metricas eleitorais essenciais;
-- servir como base para a camada ouro.
-
-Campos numericos continuos nao essenciais sao evitados na analise principal. As metricas numericas mantidas com prioridade sao:
+Metricas numericas mantidas:
 
 ```text
 eleitorado
@@ -201,65 +257,14 @@ nulos
 validos_estimados
 ```
 
-### Camada Ouro
-
-A camada `ouro` contem dados prontos para analise, dashboard, graficos e simulacao.
-
-Ela e gerada a partir da prata e evita arquivos monoliticos enormes. As tabelas grandes sao datasets Parquet particionados.
-
-Exemplo:
-
-```text
-dados/banco_eleitoral/ouro/
-  base_gold_global/
-  resultados_vencedores_secao/
-  resultado_eleitorado_por_secao/
-  perfil_eleitor_por_ano/
-  perfil_eleitor_por_partido/
-  perfil_eleitor_por_candidato/
-  perfil_candidatos/
-  timeline_nacional.parquet
-  timeline_uf/
-  timeline_municipal/
-  top10_perfis_federacao_estado_municipio/
-```
-
-Para poupar memoria, a camada ouro trabalha em fatias pequenas:
-
-```text
-UF + ano
-```
-
-E, quando necessario, particiona tambem por codigos:
-
-```text
-ano / uf / cd_municipio / zona / secao
-```
-
-Isso evita varrer todos os dados de uma vez e permite retomar o processamento com `--resume`.
-
-## Metodologia de Limpeza
-
-A limpeza segue estes principios:
-
-- preservar codigos eleitorais usados em correlacoes;
-- remover ou ignorar campos sem utilidade analitica imediata;
-- padronizar campos de UF, municipio, zona, secao, cargo e turno;
-- extrair ano do nome do arquivo quando necessario;
-- converter valores numericos de votos e eleitorado;
-- tratar valores nulos, vazios, `#NULO#`, `nan`, `None` e equivalentes;
-- priorizar variaveis discretas com mais de uma categoria;
-- evitar plotar variaveis com categoria unica;
-- evitar graficos vazios, nulos ou repetidos.
-
-Variaveis discretas priorizadas:
+Variaveis discretas prioritarias:
 
 ```text
 sexo/genero
 faixa etaria
 escolaridade/grau de instrucao
 estado civil
-raca/cor quando disponivel
+raca/cor
 partido
 candidato
 cargo
@@ -270,396 +275,25 @@ zona
 secao
 ```
 
-A biometria nao e prioridade para clustering nem para graficos principais, porque nao ajuda a descrever comportamento eleitoral no objetivo atual do projeto.
+Biometria nao e prioridade analitica e deve ser ignorada nos graficos e clusters, salvo necessidade especifica.
 
-## Metodologia de Correlacao
+## Modos Do Pipeline Principal
 
-A correlacao e feita por codigos, nao por texto livre.
-
-O projeto cruza:
-
-```text
-eleitorado + resultados + candidatos
-```
-
-As correlacoes principais usam:
-
-```text
-ano
-uf
-cd_municipio
-zona
-secao
-cargo
-turno
-```
-
-O objetivo e responder:
-
-- qual era o perfil predominante do eleitorado em uma secao;
-- qual partido ou candidato recebeu votos naquela secao;
-- quem venceu em cada secao;
-- como o perfil do eleitorado varia por ano;
-- como votos e perfis se associam por territorio;
-- quais perfis aparecem associados a partidos;
-- quais perfis aparecem associados a candidatos;
-- quais padroes se repetem entre anos.
-
-Essa correlacao nao afirma que uma pessoa especifica votou em um partido. Ela estima associacoes por agregacao territorial.
-
-## Metodologia de Analise Individual
-
-O caminho legado do pipeline ainda permite analisar documento por documento.
-
-Etapas:
-
-1. Ler cada JSON/JSONL.
-2. Identificar campos, tipos e quantidade de registros.
-3. Extrair ano a partir do nome ou conteudo.
-4. Gerar amostra e resumo.
-5. Criar gold individual.
-6. Produzir analises por ano.
-7. Gerar saidas por arquivo, preservando nome original.
-
-Saidas tipicas:
-
-```text
-resultados/<run>/individual/<arquivo_original>/
-  tabelas/
-  parquet/
-  anos/<ano>/
-```
-
-Essa etapa e util para entender cada documento isoladamente. Para bases muito grandes, o modo banco e preferido.
-
-## Metodologia de Analise Global
-
-A analise global usa as tabelas consolidadas, preferindo Parquet.
-
-Ela produz:
-
-- timeline nacional;
-- timeline por UF;
-- timeline por municipio;
-- retrato municipal;
-- vencedor por secao;
-- perfil do eleitor por ano;
-- top 10 perfis por Brasil, UF e municipio;
-- perfil do eleitor associado a partidos;
-- perfil do eleitor associado a candidatos;
-- perfil dos candidatos;
-- correlacao entre candidato e eleitorado;
-- dados para graficos e dashboards.
-
-Niveis de analise:
-
-```text
-Brasil
-UF
-municipio
-zona
-secao eleitoral
-```
-
-Na camada ouro, os resultados ficam em:
-
-```text
-dados/banco_eleitoral/ouro/
-```
-
-## Metodologia de Analise de Resultados
-
-A analise de resultados considera:
-
-- votos por partido;
-- votos por candidato;
-- votos brancos;
-- votos nulos;
-- votos validos estimados;
-- comparecimento;
-- abstencao;
-- cargo;
-- turno;
-- vencedor por secao.
-
-Para cada secao, o pipeline calcula:
-
-```text
-partido_vencedor
-candidato_vencedor
-votos_vencedor
-votos_total_secao
-share_vencedor
-```
-
-Esses resultados sao correlacionados com os perfis predominantes do eleitorado no mesmo recorte territorial.
-
-## Metodologia de Perfil do Eleitor
-
-O perfil do eleitor e descrito com variaveis discretas:
-
-```text
-faixa etaria
-sexo/genero
-escolaridade
-estado civil
-raca/cor quando disponivel
-UF
-municipio
-secao
-```
-
-O projeto busca responder:
-
-- quem e o eleitor medio no Brasil;
-- quem e o eleitor medio por estado;
-- quem e o eleitor medio por municipio;
-- quais perfis predominam por ano;
-- quais perfis crescem ou diminuem entre anos;
-- quais perfis aparecem associados a partidos e candidatos.
-
-## Metodologia de Clustering
-
-Os clusters sao usados para agrupar perfis eleitorais parecidos.
-
-Principios:
-
-- foco em dados discretos;
-- evitar dados continuos desnecessarios;
-- nao usar biometria como variavel principal;
-- manter sexo/genero, escolaridade, estado civil e faixa etaria;
-- usar valores categorizados e codificados;
-- descrever o cluster como uma pessoa/perfil, nao apenas como numero.
-
-Algoritmo principal:
-
-```text
-KMeans
-```
-
-Selecao de quantidade de clusters:
-
-```text
-tecnica do cotovelo
-```
-
-O projeto pode gerar dois tipos de cluster:
-
-1. Cluster focado somente no eleitorado.
-2. Cluster combinando eleitorado com resultados eleitorais.
-
-Cada cluster deve ser descrito em linguagem analitica, por exemplo:
-
-```text
-Cluster 2: eleitorado predominante feminino, ensino medio completo,
-faixa de 35 a 44 anos, solteiro, concentrado no Sudeste,
-com maior associacao historica a determinados partidos.
-```
-
-## Metodologia de Simulacao 2026
-
-A simulacao de 2026 usa a camada ouro como base de evidencia.
-
-Ela estima cenarios por:
-
-```text
-Brasil
-UF
-municipio
-secao quando disponivel
-partido
-cargo
-turno
-```
-
-Para a simulacao partidaria de 2026, o foco e partido, nao candidato.
-
-O pipeline estima:
-
-- percentual possivel de votos por partido no Brasil;
-- percentual possivel de votos por partido em cada UF;
-- percentual possivel de votos por partido em cada municipio;
-- perfil de eleitor associado a cada partido;
-- tendencia historica por anos analisados;
-- justificativa de correlacao historica quando existe serie comparavel.
-
-Metodologias usadas:
-
-- historico de share de votos;
-- variacao temporal entre anos;
-- swing historico;
-- cenarios deterministios;
-- Monte Carlo;
-- intervalos de incerteza;
-- comparacao entre anos eleitorais.
-
-Saidas principais:
-
-```text
-dados/banco_eleitoral/preditivo_2026/
-  parquet/
-  tabelas/
-  plots/
-  explicabilidade/
-```
-
-## Metodologia de Dashboard
-
-O projeto possui dashboards para consulta dos resultados.
-
-Dashboard Dash:
-
-```bash
-python3 scripts/dashboard_dash_eleitoral.py \
-  --run dados/banco_eleitoral \
-  --host 0.0.0.0 \
-  --port 8050
-```
-
-Acesso:
-
-```text
-http://localhost:8050
-```
-
-Dashboard Streamlit:
-
-```bash
-streamlit run scripts/dashboard_streamlit_eleitoral.py -- --run dados/banco_eleitoral
-```
-
-Os dashboards consultam os Parquets tratados diretamente, especialmente as tabelas da camada ouro. A ideia e evitar tabelas gigantes na tela e priorizar:
-
-- cards;
-- graficos;
-- filtros por municipio;
-- filtros por UF;
-- clusters descritos como perfis;
-- mapas interativos;
-- consulta resumida de tabelas quando necessario.
-
-## Como Executar
-
-O comando principal sempre tem esta forma:
+O script principal e:
 
 ```bash
 python3 scripts/run_pipeline_eleitoral_json.py <entrada> [opcoes]
 ```
 
-O argumento `<entrada>` muda conforme o modo:
+### `--modo banco`
 
-- para criar banco a partir dos JSONs: use `dados/json`;
-- para analisar banco ja criado: use `dados/banco_eleitoral`;
-- para o pipeline legado por documentos: use a pasta que contem os JSONs originais.
+Cria ou continua a base `bronze` e `prata` a partir dos JSONs.
 
-### Modos de execucao
+Use quando:
 
-O parametro `--modo` define qual parte do pipeline roda.
-
-| Modo | O que faz | Quando usar |
-|---|---|---|
-| `inventario` | Lista arquivos, campos e estrutura basica dos JSONs. | Diagnostico inicial. |
-| `individual` | Analisa cada JSON/JSONL separadamente. | Entender documento por documento. |
-| `global` | Consolida saidas individuais ja geradas. | Caminho legado, depois de `individual`. |
-| `preditivo` | Roda somente a simulacao usando base global existente. | Quando a base global ja existe. |
-| `completo` | Roda inventario, individual, global e simulacao no caminho legado. | Bases menores ou testes. |
-| `banco` | Cria banco `bronze` e `prata` em Parquet. | Caminho recomendado para arquivos grandes. |
-| `analise_banco` | Gera camada `ouro`, analises, simulacao e artefatos a partir do banco. | Depois de criar `dados/banco_eleitoral`. |
-
-### Principais campos do comando
-
-| Campo | Significado |
-|---|---|
-| `dados/json` | Pasta de entrada com JSON/JSONL/NDJSON preparados a partir dos CSVs do TSE. |
-| `dados/banco_eleitoral` | Pasta do banco persistente com bronze, prata, ouro, logs e simulacao. |
-| `--out <nome>` | Nome da pasta dentro de `resultados/` no pipeline legado. Ex.: `--out teste` cria `resultados/teste`. |
-| `--banco-out <pasta>` | Pasta onde o banco bronze/prata/ouro sera criado ou consultado. |
-| `--resume` | Continua de onde parou, pulando tarefas ja concluidas quando possivel. |
-| `--banco-overwrite` | Recria o banco do zero. Use com cuidado. |
-| `--predict-2026` | Ativa a simulacao de cenarios para 2026. |
-| `--cenarios` | Quantidade de simulacoes/cenarios Monte Carlo. |
-| `--cluster-min-k` | Menor quantidade de clusters testada. |
-| `--cluster-max-k` | Maior quantidade de clusters testada. |
-| `--log-level` | Nivel dos logs. Ex.: `INFO`, `DEBUG`, `WARNING`. |
-
-### Campos de memoria e desempenho
-
-| Campo | Significado |
-|---|---|
-| `--banco-workers` | Workers internos para arquivos pequenos/medios no modo banco. `0` usa auto-tuning. |
-| `--banco-workers-large-files` | Workers internos para arquivos grandes no modo banco. `0` usa auto-tuning. |
-| `--banco-chunk-rows` | Linhas por lote/parte Parquet no banco. Menor usa menos memoria. |
-| `--banco-large-file-threshold-gb` | Tamanho a partir do qual um arquivo e tratado como grande. |
-| `--banco-ouro-workers` | Quantas queries independentes da camada ouro rodam em paralelo. Para evitar OOM, use `1`. |
-| `--banco-duckdb-threads` | Threads usadas pelo DuckDB dentro da tarefa atual. |
-| `--banco-usar-todos-workers` | Usa todos os CPUs logicos por arquivo. Mais rapido, mas mais agressivo. |
-| `--banco-ouro-paralelo-agressivo` | Permite paralelismo pesado na ouro. Pode estourar RAM. |
-| `--banco-skip-heavy-analyses` | Pula analises ouro mais pesadas, como perfil por candidato. |
-| `--banco-apagar-json-apos-processar` | Apaga JSON original somente depois de gravar Parquet com sucesso. Use com cuidado. |
-
-### Campos do caminho legado
-
-| Campo | Significado |
-|---|---|
-| `--sample-mode head` | Usa as primeiras linhas como amostra. Mais rapido. |
-| `--sample-mode reservoir` | Amostra distribuida ao longo do arquivo. Mais representativo. |
-| `--sample-frac` | Fracao aproximada de amostragem. |
-| `--max-sample-rows` | Maximo de linhas na amostra. |
-| `--min-sample-rows` | Minimo de linhas na amostra quando houver dados. |
-| `--full-aggregations` | Forca agregacoes completas em vez de apenas amostras. |
-| `--aggregate-chunk-rows` | Tamanho dos blocos de agregacao completa. |
-| `--analysis-max-rows` | Limite de linhas para analises em memoria/HTML. |
-| `--global-max-gold-rows` | Limite opcional para carregar gold global em memoria. `0` tenta usar tudo. |
-| `--gold-csv-max-rows` | Acima deste limite, o CSV vira preview e o completo fica em Parquet. |
-| `--workers-individual` | Paralelismo na analise individual. |
-| `--workers-large-files` | Paralelismo para arquivos grandes no caminho legado. |
-| `--workers-parquet` | Paralelismo de escrita/particionamento Parquet. |
-| `--large-file-threshold-gb` | Limiar para classificar arquivo grande no caminho legado. |
-| `--parquet` | Mantem saidas Parquet ativas. Padrao ligado. |
-| `--sem-parquet` | Desativa saidas Parquet no caminho legado. |
-| `--top-n-html` | Quantidade de itens exibidos em tabelas/cards HTML. |
-| `--top-n-plots` | Quantidade de itens nos graficos. |
-
-### Campos de engine
-
-| Campo | Significado |
-|---|---|
-| `--engine pandas` | Usa pandas/Parquet. Caminho padrao. |
-| `--engine pyspark` | Tenta usar PySpark quando instalado. |
-| `--engine auto` | Tenta PySpark quando disponivel e cai para pandas se nao estiver. |
-| `--spark-master` | Master do Spark. Ex.: `local[*]`. |
-
-### Campos de simulacao
-
-| Campo | Significado |
-|---|---|
-| `--monte-carlo-sigma` | Desvio usado como ruido base na simulacao Monte Carlo. |
-| `--prediction-entity` | Entidade prevista: `auto`, `partido`, `candidato` ou coluna compativel. |
-| `--prediction-cargo-filter` | Filtro textual de cargo para a simulacao. |
-
-### Campos do PDF
-
-O PDF e gerado por um script separado, porque pode ter centenas ou milhares de paginas.
-
-| Campo | Significado |
-|---|---|
-| `--run` | Pasta do banco/run que sera consultada. Padrao: `dados/banco_eleitoral`. |
-| `--out` | Caminho do PDF final. Padrao: `<run>/relatorios/relatorio_completo_eleitoral.pdf`. |
-| `--max-pages` | Limite maximo de paginas. Ex.: `1000`. |
-| `--top-n` | Quantidade de itens por ranking/grafico. |
-| `--ufs` | Lista de UFs separadas por virgula. Vazio usa todas detectadas. |
-| `--municipios-por-uf` | Quantos municipios detalhar por UF. |
-| `--incluir-secoes` | Inclui paginas com amostra de secoes eleitorais. |
-| `--secoes-por-uf` | Quantas secoes listar por UF quando `--incluir-secoes`. |
-| `--duckdb-threads` | Threads DuckDB usadas nas consultas do PDF. |
-
-### Criar banco bronze e prata
-
-Entrada esperada:
-
-```text
-dados/json/
-```
+- voce ainda nao criou o banco Parquet;
+- voce tem novos JSONs;
+- voce quer transformar entrada bruta em base consultavel.
 
 Comando:
 
@@ -668,213 +302,1091 @@ python3 scripts/run_pipeline_eleitoral_json.py dados/json \
   --modo banco \
   --banco-out dados/banco_eleitoral \
   --resume \
-  --banco-workers 4 \
-  --banco-workers-large-files 4 \
+  --banco-workers 8 \
+  --banco-workers-large-files 8 \
   --banco-chunk-rows 10000
 ```
 
-Para apagar JSONs ja processados com sucesso:
+### `--modo analise_banco`
+
+Usa a `prata` para criar/atualizar a `ouro`, gerar analises e simulacao.
+
+Use quando:
+
+- o banco `dados/banco_eleitoral/prata` ja existe;
+- voce quer gerar dados para dashboard, PDF e predicao;
+- voce quer rodar uma modalidade especifica.
+
+### `--modo dashboard_banco`
+
+Nao recria dados. Apenas aponta para o banco existente e informa o comando do dashboard.
+
+Comando:
 
 ```bash
-python3 scripts/run_pipeline_eleitoral_json.py dados/json \
-  --modo banco \
+python3 scripts/run_pipeline_eleitoral_json.py dados/banco_eleitoral \
+  --modo dashboard_banco \
   --banco-out dados/banco_eleitoral \
-  --resume \
-  --banco-workers 4 \
-  --banco-workers-large-files 4 \
-  --banco-chunk-rows 10000 \
-  --banco-apagar-json-apos-processar
+  --resume
 ```
 
-### Rodar camada ouro, analise e simulacao
+### Modos legados por JSON direto
+
+Estes modos existem, mas para bases grandes o recomendado e usar `banco` e `analise_banco`.
+
+- `inventario`: inventaria JSONs e campos;
+- `individual`: analise individual dos arquivos;
+- `global`: analise global a partir das individuais;
+- `preditivo`: simulacao a partir de uma global ja criada;
+- `completo`: individual + global + preditivo.
+
+Exemplo legado:
+
+```bash
+python3 scripts/run_pipeline_eleitoral_json.py dados \
+  --out teste_legado \
+  --modo completo \
+  --parquet \
+  --predict-2026
+```
+
+## Modalidades Da Camada Ouro
+
+A flag principal e:
+
+```bash
+--banco-modalidade-analise <modalidade>
+```
+
+Modalidades disponiveis:
+
+```text
+completa
+estados_brasil
+eleitor
+candidato
+eleitor_partido
+eleitor_candidato_partido
+```
+
+### `completa`
+
+Roda tudo:
+
+- perfil do eleitor;
+- partido;
+- candidato;
+- clusters;
+- municipal;
+- estadual;
+- Brasil;
+- compatibilidade para dashboard/PDF;
+- simulacao.
+
+Comando pesado:
 
 ```bash
 python3 scripts/run_pipeline_eleitoral_json.py dados/banco_eleitoral \
   --modo analise_banco \
   --banco-out dados/banco_eleitoral \
   --resume \
-  --predict-2026 \
-  --cenarios 3000 \
+  --banco-modalidade-analise completa \
   --cluster-min-k 2 \
   --cluster-max-k 10 \
   --banco-ouro-workers 1 \
-  --banco-duckdb-threads 8
+  --banco-duckdb-threads 1 \
+  --cenarios 3000
 ```
 
-Use `--resume` para continuar de onde parou.
+### `estados_brasil`
 
-## Onde Ver os Resultados
+Roda so UF e Brasil. Nao faz municipio por municipio.
 
-Camada ouro:
+Use para:
+
+- testar o front rapidamente;
+- gerar uma visao nacional e estadual;
+- evitar a parte municipal longa.
+
+Comando para todos os estados:
+
+```bash
+python3 scripts/run_pipeline_eleitoral_json.py dados/banco_eleitoral \
+  --modo analise_banco \
+  --banco-out dados/banco_eleitoral \
+  --resume \
+  --banco-modalidade-analise estados_brasil \
+  --banco-somente-estados-brasil \
+  --banco-skip-heavy-analyses \
+  --banco-skip-clusters \
+  --sem-clustering \
+  --banco-ouro-workers 1 \
+  --banco-duckdb-threads 1 \
+  --cenarios 100
+```
+
+Comando para uma amostra de estados:
+
+```bash
+python3 scripts/run_pipeline_eleitoral_json.py dados/banco_eleitoral \
+  --modo analise_banco \
+  --banco-out dados/banco_eleitoral \
+  --resume \
+  --banco-modalidade-analise estados_brasil \
+  --banco-somente-estados-brasil \
+  --banco-ufs SP,RJ,MG,BA,PE,CE,RS,PR,PA,AM,GO,DF \
+  --banco-skip-heavy-analyses \
+  --banco-skip-clusters \
+  --sem-clustering \
+  --banco-ouro-workers 1 \
+  --banco-duckdb-threads 1 \
+  --cenarios 100
+```
+
+### `eleitor`
+
+Roda analise focada no perfil geral do eleitor.
+
+Gera principalmente:
+
+- perfil do eleitor por territorio;
+- top perfis;
+- resumo eleitoral basico.
+
+Comando:
+
+```bash
+python3 scripts/run_pipeline_eleitoral_json.py dados/banco_eleitoral \
+  --modo analise_banco \
+  --banco-out dados/banco_eleitoral \
+  --resume \
+  --banco-modalidade-analise eleitor \
+  --banco-max-municipios-por-uf 20 \
+  --banco-skip-clusters \
+  --sem-clustering \
+  --banco-ouro-workers 1 \
+  --banco-duckdb-threads 1 \
+  --cenarios 50
+```
+
+### `candidato`
+
+Roda analise focada em candidato, sem clusters.
+
+Gera:
+
+- resultado por candidato;
+- perfil associado ao candidato;
+- fechamento por estado e Brasil quando houver dados suficientes.
+
+Comando:
+
+```bash
+python3 scripts/run_pipeline_eleitoral_json.py dados/banco_eleitoral \
+  --modo analise_banco \
+  --banco-out dados/banco_eleitoral \
+  --resume \
+  --banco-modalidade-analise candidato \
+  --banco-max-municipios-por-uf 20 \
+  --banco-skip-clusters \
+  --sem-clustering \
+  --banco-ouro-workers 1 \
+  --banco-duckdb-threads 1 \
+  --cenarios 50
+```
+
+### `eleitor_partido`
+
+Roda a modalidade rapida municipal mais util para dashboard:
+
+- perfil geral do eleitor;
+- resultado por partido;
+- relacao eleitorado x partido;
+- sem cluster;
+- sem candidato.
+
+Use quando voce quer saber: "quem e o eleitor associado a cada partido?".
+
+Comando:
+
+```bash
+python3 scripts/run_pipeline_eleitoral_json.py dados/banco_eleitoral \
+  --modo analise_banco \
+  --banco-out dados/banco_eleitoral \
+  --resume \
+  --banco-modalidade-analise eleitor_partido \
+  --banco-max-municipios-por-uf 20 \
+  --banco-skip-clusters \
+  --sem-clustering \
+  --banco-ouro-workers 1 \
+  --banco-duckdb-threads 1 \
+  --cenarios 50
+```
+
+### `eleitor_candidato_partido`
+
+Roda eleitor + partido + candidato, mas sem clusters.
+
+Use quando voce quer comparar:
+
+- perfil do eleitor;
+- perfil associado a partido;
+- perfil associado a candidato.
+
+Comando:
+
+```bash
+python3 scripts/run_pipeline_eleitoral_json.py dados/banco_eleitoral \
+  --modo analise_banco \
+  --banco-out dados/banco_eleitoral \
+  --resume \
+  --banco-modalidade-analise eleitor_candidato_partido \
+  --banco-max-municipios-por-uf 20 \
+  --banco-skip-clusters \
+  --sem-clustering \
+  --banco-ouro-workers 1 \
+  --banco-duckdb-threads 1 \
+  --cenarios 100
+```
+
+## Dashboard Com API + Streamlit
+
+O dashboard novo e separado em duas partes:
+
+1. API FastAPI, que consulta Parquet com Polars;
+2. Front Streamlit, que chama a API.
+
+Isso evita embutir tabelas gigantes no HTML.
+
+### Rodar API
+
+```bash
+python3 scripts/dashboard_api_eleitoral.py \
+  --run dados/banco_eleitoral \
+  --host 0.0.0.0 \
+  --port 8055 \
+  --engine polars
+```
+
+Documentacao interativa da API:
 
 ```text
-dados/banco_eleitoral/ouro/
+http://localhost:8055/docs
 ```
 
-Simulacao:
+Endpoints principais:
 
 ```text
-dados/banco_eleitoral/preditivo_2026/
+GET  /api/health
+GET  /api/modalidades
+GET  /api/tabelas
+GET  /api/progresso
+GET  /api/logs
+GET  /api/processamento
+GET  /api/municipios?uf=SP
+GET  /api/mapa/estados
+GET  /api/brasil
+GET  /api/perfis
+GET  /api/partidos
+GET  /api/candidatos
+GET  /api/metricas
+GET  /api/clusters
+GET  /api/tabela
+POST /api/analises/jobs
+GET  /api/analises/jobs
+GET  /api/analises/jobs/{job_id}
+GET  /api/analises/jobs/{job_id}/logs
+POST /api/pdf/jobs
+GET  /api/pdf/jobs
+GET  /api/pdf/jobs/{job_id}
+GET  /api/pdf/jobs/{job_id}/logs
 ```
 
-Logs:
+Os endpoints analiticos aceitam o parametro `modalidade`, por exemplo:
 
 ```text
-dados/banco_eleitoral/logs/
+/api/brasil?modalidade=estados_brasil
+/api/perfis?nivel=estado&uf=SP&modalidade=eleitor
+/api/partidos?escopo=municipio&uf=SP&modalidade=eleitor_partido
+/api/candidatos?escopo=estado&uf=SP&tipo=perfil&modalidade=candidato
+/api/clusters?nivel=brasil&modalidade=completa
 ```
 
-Metadados:
+Quando uma modalidade nao gera aquela parte, a API responde com `habilitado=false`, dados vazios e um aviso em vez de quebrar.
+
+Exemplos de consulta da API por modalidade:
+
+```bash
+# completa: Brasil com perfil, partido e bases para cluster quando existirem
+curl "http://localhost:8055/api/brasil?modalidade=completa&limit=20"
+
+# estados_brasil: visao estadual/nacional, sem municipio detalhado
+curl "http://localhost:8055/api/mapa/estados?modalidade=estados_brasil&limit=80"
+
+# eleitor: perfil do eleitor em nivel de estado
+curl "http://localhost:8055/api/perfis?nivel=estado&uf=SP&modalidade=eleitor&limit=20"
+
+# candidato: resultado/perfil de candidato
+curl "http://localhost:8055/api/candidatos?escopo=estado&uf=SP&tipo=perfil&modalidade=candidato&limit=20"
+
+# eleitor_partido: ranking de partido e perfil associado
+curl "http://localhost:8055/api/partidos?escopo=municipio&uf=SP&municipio=71072%7CSAO%20PAULO&modalidade=eleitor_partido&limit=20"
+
+# eleitor_candidato_partido: partido + candidato + perfil
+curl "http://localhost:8055/api/candidatos?escopo=municipio&uf=SP&municipio=71072%7CSAO%20PAULO&tipo=resultado&modalidade=eleitor_candidato_partido&limit=20"
+```
+
+### Rodar analises pela API
+
+A API tambem consegue disparar o proprio `analise_banco` em background. Isso serve para rodar a camada ouro pelo front ou pelo Swagger sem abrir um terminal novo.
+
+Endpoint:
 
 ```text
-dados/banco_eleitoral/metadados/
+POST /api/analises/jobs
 ```
 
-Parquets corrompidos, quando encontrados:
+Exemplo pelo `curl`, rodando `estados_brasil`:
+
+```bash
+curl -X POST http://localhost:8055/api/analises/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "modalidade_analise": "estados_brasil",
+    "somente_estados_brasil": true,
+    "ufs": "",
+    "max_municipios_por_uf": 0,
+    "cenarios": 100,
+    "banco_ouro_workers": 1,
+    "banco_duckdb_threads": 1,
+    "skip_heavy_analyses": true,
+    "skip_clusters": true,
+    "predict_2026": true
+  }'
+```
+
+Exemplo `eleitor_partido` limitado a alguns estados:
+
+```bash
+curl -X POST http://localhost:8055/api/analises/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "modalidade_analise": "eleitor_partido",
+    "ufs": "SP,RJ,MG,BA",
+    "somente_estados_brasil": false,
+    "max_municipios_por_uf": 20,
+    "cenarios": 50,
+    "banco_ouro_workers": 1,
+    "banco_duckdb_threads": 1,
+    "skip_heavy_analyses": true,
+    "skip_clusters": true,
+    "predict_2026": true
+  }'
+```
+
+Ver jobs de analise:
+
+```bash
+curl http://localhost:8055/api/analises/jobs
+```
+
+Ver um job especifico:
+
+```bash
+curl http://localhost:8055/api/analises/jobs/SEU_JOB_ID
+```
+
+Ver logs de um job:
+
+```bash
+curl "http://localhost:8055/api/analises/jobs/SEU_JOB_ID/logs?max_lines=220"
+```
+
+Os logs ficam em:
 
 ```text
-dados/banco_eleitoral/metadados/parquets_corrompidos/
+dados/banco_eleitoral/logs/api_jobs/
 ```
 
-Relatorios PDF:
+Disparar cada modalidade pela API:
+
+```bash
+# completa
+curl -X POST http://localhost:8055/api/analises/jobs -H "Content-Type: application/json" -d '{"modalidade_analise":"completa","cenarios":3000,"banco_ouro_workers":1,"banco_duckdb_threads":1,"skip_heavy_analyses":false,"skip_clusters":false,"predict_2026":true}'
+
+# estados_brasil
+curl -X POST http://localhost:8055/api/analises/jobs -H "Content-Type: application/json" -d '{"modalidade_analise":"estados_brasil","somente_estados_brasil":true,"cenarios":100,"banco_ouro_workers":1,"banco_duckdb_threads":1,"skip_heavy_analyses":true,"skip_clusters":true,"predict_2026":true}'
+
+# eleitor
+curl -X POST http://localhost:8055/api/analises/jobs -H "Content-Type: application/json" -d '{"modalidade_analise":"eleitor","max_municipios_por_uf":20,"cenarios":50,"banco_ouro_workers":1,"banco_duckdb_threads":1,"skip_heavy_analyses":true,"skip_clusters":true,"predict_2026":false}'
+
+# candidato
+curl -X POST http://localhost:8055/api/analises/jobs -H "Content-Type: application/json" -d '{"modalidade_analise":"candidato","max_municipios_por_uf":20,"cenarios":50,"banco_ouro_workers":1,"banco_duckdb_threads":1,"skip_heavy_analyses":true,"skip_clusters":true,"predict_2026":false}'
+
+# eleitor_partido
+curl -X POST http://localhost:8055/api/analises/jobs -H "Content-Type: application/json" -d '{"modalidade_analise":"eleitor_partido","max_municipios_por_uf":20,"cenarios":50,"banco_ouro_workers":1,"banco_duckdb_threads":1,"skip_heavy_analyses":true,"skip_clusters":true,"predict_2026":true}'
+
+# eleitor_candidato_partido
+curl -X POST http://localhost:8055/api/analises/jobs -H "Content-Type: application/json" -d '{"modalidade_analise":"eleitor_candidato_partido","max_municipios_por_uf":20,"cenarios":100,"banco_ouro_workers":1,"banco_duckdb_threads":1,"skip_heavy_analyses":true,"skip_clusters":true,"predict_2026":true}'
+```
+
+### Rodar Streamlit
+
+Em outro terminal:
+
+```bash
+streamlit run scripts/dashboard_streamlit_api_eleitoral.py -- \
+  --api http://localhost:8055
+```
+
+Abra:
 
 ```text
-dados/banco_eleitoral/relatorios/
+http://localhost:8501
 ```
 
-## Gerar Relatorio PDF Completo
+No Streamlit existem abas para:
 
-Depois que a camada ouro existir, gere o PDF completo assim:
+- consultar Brasil, estado e municipio somente quando o usuario clica em buscar;
+- carregar mapa e graficos a partir da API;
+- acompanhar progresso e logs;
+- consultar tabelas tratadas;
+- gerar PDF pela API;
+- rodar analise do banco ouro pela API.
+
+Na aba `Rodar analise`, use os presets:
+
+```text
+Estados + Brasil rapido
+Eleitor + partido rapido
+Candidato rapido
+Eleitor + candidato + partido
+Completa segura
+Personalizado
+```
+
+O front envia a modalidade para `POST /api/analises/jobs`, mostra o Job ID e permite consultar o log do processamento sem sair da tela.
+
+## Dashboard HTML E PDF Estaticos
+
+Para gerar varios HTMLs em `resultados/`, usando a camada ouro ja existente:
+
+```bash
+python3 scripts/gerar_dashboards_ouro_html_pdf.py dados/banco_eleitoral \
+  --out resultados/dashboards_ouro \
+  --top-n 20 \
+  --max-municipios-por-estado 350 \
+  --ano 2024 \
+  --cenario base
+```
+
+Somente HTML, sem PDF:
+
+```bash
+python3 scripts/gerar_dashboards_ouro_html_pdf.py dados/banco_eleitoral \
+  --out resultados/dashboards_ouro \
+  --top-n 20 \
+  --sem-pdf
+```
+
+Gerar apenas algumas UFs:
+
+```bash
+python3 scripts/gerar_dashboards_ouro_html_pdf.py dados/banco_eleitoral \
+  --out resultados/dashboards_sp_rj_mg \
+  --ufs SP,RJ,MG \
+  --top-n 20 \
+  --sem-pdf
+```
+
+## Relatorio PDF
+
+Gerar PDF completo a partir dos Parquets:
 
 ```bash
 python3 scripts/gerar_relatorio_pdf_eleitoral.py \
   --run dados/banco_eleitoral \
   --out dados/banco_eleitoral/relatorios/relatorio_completo_eleitoral.pdf \
+  --modalidade-analise completa \
   --max-pages 1000 \
-  --top-n 20 \
-  --municipios-por-uf 30 \
-  --incluir-secoes \
-  --secoes-por-uf 80 \
-  --duckdb-threads 4
+  --top-n 15 \
+  --municipios-por-uf 20 \
+  --query-engine polars \
+  --duckdb-threads 1
 ```
 
-Para um PDF menor de verificacao:
+Gerar PDF menor para teste:
 
 ```bash
 python3 scripts/gerar_relatorio_pdf_eleitoral.py \
   --run dados/banco_eleitoral \
-  --out dados/banco_eleitoral/relatorios/relatorio_teste.pdf \
-  --max-pages 30 \
+  --out resultados/relatorio_teste.pdf \
+  --modalidade-analise estados_brasil \
+  --max-pages 80 \
   --top-n 10 \
-  --municipios-por-uf 2 \
-  --duckdb-threads 2
+  --ufs SP,RJ,MG \
+  --municipios-por-uf 5 \
+  --query-engine polars \
+  --duckdb-threads 1
 ```
 
-## Monitoramento
-
-Durante a execucao:
+Com logs detalhados:
 
 ```bash
-du -sh dados/banco_eleitoral/ouro
+python3 scripts/gerar_relatorio_pdf_eleitoral.py \
+  --run dados/banco_eleitoral \
+  --out resultados/relatorio_teste.pdf \
+  --modalidade-analise eleitor_partido \
+  --log-dir resultados/logs_pdf_teste \
+  --max-pages 80 \
+  --top-n 10 \
+  --ufs SP,RJ,MG \
+  --municipios-por-uf 5 \
+  --query-engine polars
 ```
+
+### PDF por modalidade
+
+Troque apenas `--modalidade-analise` para gerar relatorios com foco diferente.
+
+PDF `completa`:
 
 ```bash
-find dados/banco_eleitoral/ouro -name "*.parquet" | wc -l
+python3 scripts/gerar_relatorio_pdf_eleitoral.py \
+  --run dados/banco_eleitoral \
+  --out resultados/pdf_completa.pdf \
+  --modalidade-analise completa \
+  --max-pages 1000 \
+  --top-n 15 \
+  --municipios-por-uf 20 \
+  --query-engine polars \
+  --duckdb-threads 1
 ```
 
-Ver logs da ouro:
+PDF `estados_brasil`:
 
 ```bash
-ls dados/banco_eleitoral/logs/ouro
+python3 scripts/gerar_relatorio_pdf_eleitoral.py \
+  --run dados/banco_eleitoral \
+  --out resultados/pdf_estados_brasil.pdf \
+  --modalidade-analise estados_brasil \
+  --max-pages 120 \
+  --top-n 15 \
+  --municipios-por-uf 0 \
+  --query-engine polars \
+  --duckdb-threads 1
 ```
 
-## Robustez e Memoria
+PDF `eleitor`:
 
-O projeto foi ajustado para bases grandes:
+```bash
+python3 scripts/gerar_relatorio_pdf_eleitoral.py \
+  --run dados/banco_eleitoral \
+  --out resultados/pdf_eleitor.pdf \
+  --modalidade-analise eleitor \
+  --max-pages 200 \
+  --top-n 15 \
+  --municipios-por-uf 10 \
+  --query-engine polars \
+  --duckdb-threads 1
+```
 
-- evita carregar JSON inteiro em memoria;
-- usa Parquet como armazenamento intermediario;
-- processa arquivos grandes por partes;
-- processa camada ouro em fatias `UF + ano`;
-- particiona dados por codigos eleitorais;
-- grava Parquets antes de seguir para a proxima fatia;
-- permite `--resume`;
-- move Parquets corrompidos para quarentena quando detectados;
-- evita multiplas queries pesadas simultaneas na camada ouro.
+PDF `candidato`:
 
-Recomendacao para maquinas comuns:
+```bash
+python3 scripts/gerar_relatorio_pdf_eleitoral.py \
+  --run dados/banco_eleitoral \
+  --out resultados/pdf_candidato.pdf \
+  --modalidade-analise candidato \
+  --max-pages 200 \
+  --top-n 15 \
+  --municipios-por-uf 10 \
+  --query-engine polars \
+  --duckdb-threads 1
+```
+
+PDF `eleitor_partido`:
+
+```bash
+python3 scripts/gerar_relatorio_pdf_eleitoral.py \
+  --run dados/banco_eleitoral \
+  --out resultados/pdf_eleitor_partido.pdf \
+  --modalidade-analise eleitor_partido \
+  --max-pages 250 \
+  --top-n 15 \
+  --municipios-por-uf 10 \
+  --query-engine polars \
+  --duckdb-threads 1
+```
+
+PDF `eleitor_candidato_partido`:
+
+```bash
+python3 scripts/gerar_relatorio_pdf_eleitoral.py \
+  --run dados/banco_eleitoral \
+  --out resultados/pdf_eleitor_candidato_partido.pdf \
+  --modalidade-analise eleitor_candidato_partido \
+  --max-pages 300 \
+  --top-n 15 \
+  --municipios-por-uf 10 \
+  --query-engine polars \
+  --duckdb-threads 1
+```
+
+## Simulacao 2026
+
+A simulacao e gerada no modo `analise_banco` quando o pipeline fecha os dados necessarios. Ela grava em:
+
+```text
+dados/banco_eleitoral/preditivo_2026/
+```
+
+Arquivos esperados:
+
+```text
+partidos_2026_brasil
+partidos_2026_estados
+partidos_2026_municipios
+correlacao_historica
+cenarios
+```
+
+Para uma simulacao leve:
+
+```bash
+--cenarios 50
+```
+
+Para uma simulacao mais robusta:
+
+```bash
+--cenarios 3000
+```
+
+Quanto maior `--cenarios`, mais demorado fica.
+
+## Clustering
+
+O clustering usa KMeans quando ativo.
+
+Flags:
+
+```bash
+--clustering
+--sem-clustering
+--cluster-min-k 2
+--cluster-max-k 10
+```
+
+Por padrao, as modalidades curtas pulam clusters. A modalidade `completa` pode gerar:
+
+- `clusters_eleitores`: perfil do eleitor;
+- `clusters_eleitores_resultado`: perfil do eleitor + resultado.
+
+O foco dos clusters deve ser em variaveis discretas:
+
+```text
+faixa etaria
+sexo/genero
+escolaridade
+estado civil
+raca/cor
+partido, quando a analise inclui resultado
+```
+
+Nao use biometria como variavel central de cluster.
+
+## Retomar Depois De Crash
+
+Use sempre:
+
+```bash
+--resume
+```
+
+O pipeline grava progresso em:
+
+```text
+dados/banco_eleitoral/logs/
+dados/banco_eleitoral/logs/ouro/
+```
+
+Se cair, rode o mesmo comando novamente com `--resume`.
+
+Exemplo:
+
+```bash
+python3 scripts/run_pipeline_eleitoral_json.py dados/banco_eleitoral \
+  --modo analise_banco \
+  --banco-out dados/banco_eleitoral \
+  --resume \
+  --banco-modalidade-analise eleitor_partido \
+  --banco-max-municipios-por-uf 20 \
+  --banco-skip-clusters \
+  --sem-clustering \
+  --banco-ouro-workers 1 \
+  --banco-duckdb-threads 1 \
+  --cenarios 50
+```
+
+## Logs
+
+Logs principais:
+
+```text
+dados/banco_eleitoral/logs/
+dados/banco_eleitoral/logs/ouro/
+dados/banco_eleitoral/logs/eventos_pipeline.jsonl
+```
+
+O que procurar:
+
+- `Banco eleitoral limpo iniciado`: criacao bronze/prata;
+- `Parquet prata gravado`: escrita de uma parte Parquet;
+- `Modo analise_banco`: inicio da camada ouro;
+- `Ouro municipal`: analise por municipio;
+- `Ouro estados+Brasil`: modo curto sem municipal detalhado;
+- `DuckDB COPY iniciado`: inicio de uma query Parquet;
+- `DuckDB COPY finalizado`: query terminou;
+- `Out of Memory`: falta de memoria;
+- `Pulando tarefa ouro ja concluida`: `--resume` reaproveitou output.
+
+## Flags Mais Importantes
+
+### Entrada e saida
+
+```text
+dados
+```
+
+Primeiro argumento. Pode ser `dados/json` no modo banco ou `dados/banco_eleitoral` no modo analise.
+
+```bash
+--out nome_do_run
+```
+
+Usado pelos modos legados para gravar dentro de `resultados/`.
+
+```bash
+--banco-out dados/banco_eleitoral
+```
+
+Pasta do banco Parquet.
+
+### Controle de retomada
+
+```bash
+--resume
+```
+
+Reaproveita o que ja foi processado.
+
+```bash
+--banco-overwrite
+```
+
+Recria o banco. Use com cuidado, pois pode sobrescrever saidas.
+
+### Criacao do banco
+
+```bash
+--banco-workers 8
+```
+
+Workers para arquivos pequenos/medios.
+
+```bash
+--banco-workers-large-files 8
+```
+
+Workers para arquivos grandes.
+
+```bash
+--banco-chunk-rows 10000
+```
+
+Tamanho dos blocos de escrita Parquet.
+
+```bash
+--banco-max-files 10
+```
+
+Processa somente alguns arquivos. Bom para teste.
+
+```bash
+--banco-apagar-json-apos-processar
+```
+
+Apaga o JSON original depois que ele foi gravado em Parquet com sucesso. Use somente se voce tiver certeza de que pode apagar a entrada.
+
+### Camada ouro
+
+```bash
+--banco-modalidade-analise completa
+--banco-modalidade-analise estados_brasil
+--banco-modalidade-analise eleitor
+--banco-modalidade-analise candidato
+--banco-modalidade-analise eleitor_partido
+--banco-modalidade-analise eleitor_candidato_partido
+```
+
+Escolhe o tipo de analise.
+
+```bash
+--banco-somente-estados-brasil
+```
+
+Pula municipio detalhado e gera UF + Brasil.
+
+```bash
+--banco-ufs SP,RJ,MG
+```
+
+Limita a analise a UFs especificas.
+
+```bash
+--banco-max-municipios-por-uf 20
+```
+
+Limita quantidade de municipios por UF. Bom para teste do front.
+
+```bash
+--banco-skip-heavy-analyses
+```
+
+Pula partes mais pesadas, principalmente candidato por perfil em alguns fluxos.
+
+```bash
+--banco-skip-clusters
+--sem-clustering
+```
+
+Pula clusters.
 
 ```bash
 --banco-ouro-workers 1
---banco-duckdb-threads 8
+--banco-duckdb-threads 1
 ```
 
-Isso roda uma tarefa pesada por vez, usando varias threads dentro da tarefa atual.
-
-## Limitacoes Metodologicas
-
-Este projeto nao mede voto individual. Ele trabalha com dados agregados por territorio e secao.
-
-Limitacoes:
-
-- associacao entre perfil e voto e ecologica;
-- resultados dependem da qualidade dos arquivos oficiais baixados;
-- arquivos incompletos ou corrompidos precisam ser reprocessados;
-- mudancas de layout do TSE podem exigir novos mapeamentos;
-- categorias ausentes ou muito agregadas reduzem poder explicativo;
-- simulacao 2026 nao e previsao deterministica, e sim cenario estatistico baseado em historico.
-
-## Estrutura Principal do Codigo
-
-```text
-scripts/
-  run_pipeline_eleitoral_json.py
-  pipeline_eleitoral_json/
-    main.py
-    config.py
-    clean_database.py
-    json_reader.py
-    stage_individual.py
-    stage_global.py
-    stage_simulation.py
-    aggregation.py
-    global_correlation.py
-    global_cluster_analysis.py
-    electoral_analysis.py
-    comportamento_eleitoral.py
-    simulation.py
-    explainability.py
-    plots.py
-    utils.py
-  dashboard_dash_eleitoral.py
-  dashboard_streamlit_eleitoral.py
-```
-
-## Dependencias
-
-Instalacao recomendada:
+Configuracao segura de memoria. Mais lenta, mas reduz risco de OOM.
 
 ```bash
-python3 -m pip install -r scripts/pipeline_eleitoral_json/requirements.txt
+--banco-ouro-paralelo-agressivo
 ```
 
-Principais bibliotecas:
+Forca mais paralelismo na ouro. Pode ser mais rapido, mas aumenta risco de estourar memoria.
 
-- pandas;
-- pyarrow;
-- duckdb;
-- numpy;
-- scikit-learn;
-- plotly;
-- dash;
-- streamlit.
+### Simulacao
 
-## Licenca e Uso dos Dados
+```bash
+--predict-2026
+--cenarios 3000
+--monte-carlo-sigma 0.035
+--prediction-entity auto
+--prediction-cargo-filter ""
+```
 
-O codigo organiza e analisa dados publicos. Os dados originais pertencem ao ecossistema de dados abertos do TSE e devem ser citados conforme a fonte oficial:
+`--cenarios` controla quantas simulacoes serao feitas.
+
+## Como Escolher O Comando Certo
+
+### Quero criar o banco do zero
+
+```bash
+python3 scripts/run_pipeline_eleitoral_json.py dados/json \
+  --modo banco \
+  --banco-out dados/banco_eleitoral \
+  --resume \
+  --banco-workers 8 \
+  --banco-workers-large-files 8 \
+  --banco-chunk-rows 10000
+```
+
+### Quero testar o dashboard rapidamente
+
+```bash
+python3 scripts/run_pipeline_eleitoral_json.py dados/banco_eleitoral \
+  --modo analise_banco \
+  --banco-out dados/banco_eleitoral \
+  --resume \
+  --banco-modalidade-analise estados_brasil \
+  --banco-somente-estados-brasil \
+  --banco-skip-heavy-analyses \
+  --banco-skip-clusters \
+  --sem-clustering \
+  --banco-ouro-workers 1 \
+  --banco-duckdb-threads 1 \
+  --cenarios 100
+```
+
+### Quero analise rapida municipal de eleitor + partido
+
+```bash
+python3 scripts/run_pipeline_eleitoral_json.py dados/banco_eleitoral \
+  --modo analise_banco \
+  --banco-out dados/banco_eleitoral \
+  --resume \
+  --banco-modalidade-analise eleitor_partido \
+  --banco-max-municipios-por-uf 20 \
+  --banco-skip-clusters \
+  --sem-clustering \
+  --banco-ouro-workers 1 \
+  --banco-duckdb-threads 1 \
+  --cenarios 50
+```
+
+### Quero analise rapida de candidato
+
+```bash
+python3 scripts/run_pipeline_eleitoral_json.py dados/banco_eleitoral \
+  --modo analise_banco \
+  --banco-out dados/banco_eleitoral \
+  --resume \
+  --banco-modalidade-analise candidato \
+  --banco-max-municipios-por-uf 20 \
+  --banco-skip-clusters \
+  --sem-clustering \
+  --banco-ouro-workers 1 \
+  --banco-duckdb-threads 1 \
+  --cenarios 50
+```
+
+### Quero tudo, aceitando que vai demorar
+
+```bash
+python3 scripts/run_pipeline_eleitoral_json.py dados/banco_eleitoral \
+  --modo analise_banco \
+  --banco-out dados/banco_eleitoral \
+  --resume \
+  --banco-modalidade-analise completa \
+  --cluster-min-k 2 \
+  --cluster-max-k 10 \
+  --banco-ouro-workers 1 \
+  --banco-duckdb-threads 1 \
+  --cenarios 3000
+```
+
+## Problemas Comuns
+
+### O dashboard abre, mas aparece vazio
+
+Possiveis causas:
+
+- a camada `ouro/brasil` ainda nao existe;
+- a camada `ouro/estadual` ainda nao existe;
+- voce rodou so municipio parcial e nao fechou Brasil;
+- a API esta apontando para a pasta errada.
+
+Solucao rapida:
+
+```bash
+python3 scripts/run_pipeline_eleitoral_json.py dados/banco_eleitoral \
+  --modo analise_banco \
+  --banco-out dados/banco_eleitoral \
+  --resume \
+  --banco-modalidade-analise estados_brasil \
+  --banco-somente-estados-brasil \
+  --banco-skip-heavy-analyses \
+  --banco-skip-clusters \
+  --sem-clustering \
+  --banco-ouro-workers 1 \
+  --banco-duckdb-threads 1 \
+  --cenarios 100
+```
+
+### Deu `Out of Memory`
+
+Use configuracao segura:
+
+```bash
+--banco-ouro-workers 1
+--banco-duckdb-threads 1
+--banco-skip-clusters
+--sem-clustering
+```
+
+Depois rode de novo com:
+
+```bash
+--resume
+```
+
+### Esta muito lento
+
+Para testar front, nao rode completo. Use:
+
+```bash
+--banco-modalidade-analise estados_brasil
+--banco-somente-estados-brasil
+```
+
+Ou limite municipios:
+
+```bash
+--banco-max-municipios-por-uf 20
+```
+
+### Quero processar todos os estados sem municipal
+
+Nao passe `--banco-ufs`. Assim ele pega todas as UFs detectadas.
+
+### Quero processar so alguns estados
+
+Use:
+
+```bash
+--banco-ufs SP,RJ,MG
+```
+
+### Posso apagar os JSONs depois do banco?
+
+Depois que `bronze` e `prata` estiverem criadas e conferidas, tecnicamente as analises podem usar o banco Parquet sem os JSONs. Mas apague os JSONs somente se voce tiver certeza de que nao precisara reprocessar a origem.
+
+Se quiser automatizar no modo banco:
+
+```bash
+--banco-apagar-json-apos-processar
+```
+
+## Limites Metodologicos
+
+- O projeto trabalha com dados agregados.
+- A relacao eleitorado x voto nao prova voto individual.
+- Perfil por partido/candidato e uma aproximacao territorial.
+- Clusters agrupam perfis predominantes, nao pessoas reais.
+- Simulacao 2026 e cenario estatistico, nao previsao garantida.
+
+## Resumo Mental Da Arquitetura
+
+Pense assim:
 
 ```text
-Tribunal Superior Eleitoral - Portal de Dados Abertos do TSE
-https://dadosabertos.tse.jus.br/
+JSON bruto
+  -> bronze: preserva e audita
+  -> prata: limpa e padroniza
+  -> ouro municipal: analises por municipio
+  -> ouro estadual: fecha cada UF
+  -> ouro Brasil: fecha a federacao
+  -> API/Dashboard/PDF: consulta so Parquet tratado
 ```
 
-Ao divulgar resultados, informe que as conclusoes sao derivadas de dados agregados e que correlacoes territoriais nao representam prova de comportamento individual.
+Para teste rapido, pule o municipal:
+
+```text
+prata
+  -> ouro estadual
+  -> ouro Brasil
+  -> dashboard
+```
+
+Para analise completa, rode:
+
+```text
+prata
+  -> municipal completo
+  -> estadual
+  -> Brasil
+  -> clusters
+  -> simulacao
+  -> dashboard/PDF
+```

@@ -44,6 +44,11 @@ class Config:
     banco_ouro_workers: int
     banco_duckdb_threads: int
     banco_skip_heavy_analyses: bool
+    banco_only_states_brasil: bool
+    banco_ufs: str
+    banco_skip_clusters: bool
+    banco_analysis_mode: str
+    banco_max_municipios_por_uf: int
     banco_delete_source_after_success: bool
     banco_use_all_workers: bool
     banco_ouro_parallel_aggressive: bool
@@ -227,7 +232,7 @@ def parse_args() -> Config:
     )
     parser.add_argument(
         "--modo",
-        choices=["inventario", "individual", "global", "preditivo", "completo", "banco", "analise_banco"],
+        choices=["inventario", "individual", "global", "preditivo", "completo", "banco", "analise_banco", "dashboard_banco"],
         default="completo",
     )
     parser.add_argument("--resume", action="store_true")
@@ -290,6 +295,33 @@ def parse_args() -> Config:
     parser.add_argument("--banco-ouro-workers", type=int, default=0, help="Queries independentes da camada ouro executadas em paralelo. 0 calcula automaticamente.")
     parser.add_argument("--banco-duckdb-threads", type=int, default=0, help="Total aproximado de threads DuckDB usadas na camada ouro. 0 calcula automaticamente.")
     parser.add_argument("--banco-skip-heavy-analyses", action="store_true", help="Pula analises ouro mais pesadas, como candidato por perfil.")
+    parser.add_argument(
+        "--banco-somente-estados-brasil",
+        action="store_true",
+        help="Modo curto para dashboard: gera apenas analises estaduais e Brasil, sem varrer municipio por municipio.",
+    )
+    parser.add_argument(
+        "--banco-ufs",
+        default="",
+        help="Lista de UFs separadas por virgula para limitar analise_banco, ex: SP,RJ,MG,BA. Vazio usa todas.",
+    )
+    parser.add_argument(
+        "--banco-skip-clusters",
+        action="store_true",
+        help="Pula clusters na camada ouro. Recomendado para teste rapido do front.",
+    )
+    parser.add_argument(
+        "--banco-modalidade-analise",
+        choices=["completa", "estados_brasil", "eleitor", "candidato", "eleitor_partido", "eleitor_candidato_partido"],
+        default="completa",
+        help="Seleciona quais analises da camada ouro serao geradas.",
+    )
+    parser.add_argument(
+        "--banco-max-municipios-por-uf",
+        type=int,
+        default=0,
+        help="Limita a quantidade de municipios por UF no modo municipal. 0 processa todos.",
+    )
     parser.add_argument(
         "--banco-ouro-paralelo-agressivo",
         dest="banco_ouro_parallel_aggressive",
@@ -371,6 +403,11 @@ def parse_args() -> Config:
         banco_ouro_workers=int(banco_auto["banco_ouro_workers"]),
         banco_duckdb_threads=int(banco_auto["banco_duckdb_threads"]),
         banco_skip_heavy_analyses=bool(args.banco_skip_heavy_analyses),
+        banco_only_states_brasil=bool(args.banco_somente_estados_brasil or args.banco_modalidade_analise == "estados_brasil"),
+        banco_ufs=str(args.banco_ufs or ""),
+        banco_skip_clusters=bool(args.banco_skip_clusters or not args.clustering or args.banco_modalidade_analise != "completa"),
+        banco_analysis_mode=str(args.banco_modalidade_analise or "completa"),
+        banco_max_municipios_por_uf=max(0, int(args.banco_max_municipios_por_uf or 0)),
         banco_delete_source_after_success=bool(args.banco_delete_source_after_success),
         banco_use_all_workers=bool(args.banco_use_all_workers),
         banco_ouro_parallel_aggressive=bool(args.banco_ouro_parallel_aggressive),

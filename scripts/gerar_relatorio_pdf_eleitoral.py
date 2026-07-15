@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import json
+import logging
 import math
 import sys
 import textwrap
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -24,16 +27,64 @@ except ModuleNotFoundError as exc:
     )
     raise SystemExit(1) from exc
 
+try:
+    from parquet_query_polars_eleitoral import (
+        ANALYSIS_MODES,
+        MODE_LABELS,
+        PolarsStore,
+        modalidade_allows,
+        modalidade_info,
+        normalize_modalidade,
+        records as polars_records,
+        polars_available,
+    )
+except Exception:  # pragma: no cover - fallback quando polars nao esta instalado
+    ANALYSIS_MODES = ["completa", "estados_brasil", "eleitor", "candidato", "eleitor_partido", "eleitor_candidato_partido"]
+    MODE_LABELS = {x: x for x in ANALYSIS_MODES}
+    PolarsStore = None  # type: ignore[assignment]
+
+    def normalize_modalidade(value: Any) -> str:
+        text = str(value or "completa").strip().lower()
+        return text if text in ANALYSIS_MODES else "completa"
+
+    def modalidade_allows(value: Any, feature: str) -> bool:
+        mode = normalize_modalidade(value)
+        if mode == "completa":
+            return True
+        if mode == "estados_brasil":
+            return feature in {"brasil", "estado", "perfil", "partido", "simulacao"}
+        if mode == "eleitor":
+            return feature in {"brasil", "estado", "municipio", "perfil"}
+        if mode == "candidato":
+            return feature in {"brasil", "estado", "municipio", "candidato"}
+        if mode == "eleitor_partido":
+            return feature in {"brasil", "estado", "municipio", "perfil", "partido", "simulacao"}
+        if mode == "eleitor_candidato_partido":
+            return feature in {"brasil", "estado", "municipio", "perfil", "partido", "candidato", "simulacao"}
+        return False
+
+    def modalidade_info(value: Any) -> dict[str, Any]:
+        mode = normalize_modalidade(value)
+        return {"modalidade": mode, "label": MODE_LABELS.get(mode, mode)}
+
+    def polars_records(_: Any) -> list[dict[str, Any]]:
+        return []
+
+    def polars_available() -> bool:
+        return False
+
 
 TABLE_CANDIDATES: dict[str, list[str]] = {
-    "municipal": ["ouro/retrato_municipal", "ouro/retrato_municipal.parquet", "global/parquet/retrato_municipal_global.parquet"],
-    "timeline_nacional": ["ouro/timeline_nacional.parquet", "global/parquet/timeline_nacional.parquet"],
-    "timeline_uf": ["ouro/timeline_uf", "ouro/timeline_uf.parquet", "global/parquet/timeline_uf.parquet"],
-    "timeline_municipal": ["ouro/timeline_municipal", "ouro/timeline_municipal.parquet", "global/parquet/timeline_municipal.parquet"],
-    "perfil_ano": ["ouro/perfil_eleitor_por_ano", "ouro/perfil_eleitor_por_ano.parquet"],
-    "perfil_partido": ["ouro/perfil_eleitor_por_partido", "ouro/perfil_eleitor_por_partido.parquet"],
-    "perfil_candidato": ["ouro/perfil_eleitor_por_candidato", "ouro/perfil_eleitor_por_candidato.parquet"],
-    "top10_perfis": ["ouro/top10_perfis_federacao_estado_municipio", "ouro/top10_perfis_federacao_estado_municipio.parquet"],
+    "municipal": ["ouro/municipal/resumo", "ouro/retrato_municipal", "ouro/retrato_municipal.parquet", "global/parquet/retrato_municipal_global.parquet"],
+    "timeline_nacional": ["ouro/brasil/resumo", "ouro/timeline_nacional.parquet", "global/parquet/timeline_nacional.parquet"],
+    "timeline_uf": ["ouro/estadual/resumo", "ouro/timeline_uf", "ouro/timeline_uf.parquet", "global/parquet/timeline_uf.parquet"],
+    "timeline_municipal": ["ouro/municipal/resumo", "ouro/timeline_municipal", "ouro/timeline_municipal.parquet", "global/parquet/timeline_municipal.parquet"],
+    "perfil_ano": ["ouro/perfil_eleitor_por_ano", "ouro/brasil/perfil_eleitor", "ouro/estadual/perfil_eleitor", "ouro/municipal/perfil_eleitor", "ouro/perfil_eleitor_por_ano.parquet"],
+    "perfil_partido": ["ouro/brasil/perfil_partido", "ouro/estadual/perfil_partido", "ouro/municipal/perfil_partido", "ouro/perfil_eleitor_por_partido", "ouro/perfil_eleitor_por_partido.parquet"],
+    "perfil_candidato": ["ouro/brasil/perfil_candidato", "ouro/estadual/perfil_candidato", "ouro/municipal/perfil_candidato", "ouro/perfil_eleitor_por_candidato", "ouro/perfil_eleitor_por_candidato.parquet"],
+    "resultado_partido": ["ouro/brasil/resultado_partido", "ouro/estadual/resultado_partido", "ouro/municipal/resultado_partido"],
+    "resultado_candidato": ["ouro/brasil/resultado_candidato", "ouro/estadual/resultado_candidato", "ouro/municipal/resultado_candidato"],
+    "top10_perfis": ["ouro/top10_perfis_federacao_estado_municipio", "ouro/brasil/perfil_eleitor", "ouro/estadual/perfil_eleitor", "ouro/municipal/perfil_eleitor", "ouro/top10_perfis_federacao_estado_municipio.parquet"],
     "vencedor_secao": ["ouro/resultados_vencedores_secao", "ouro/resultados_vencedores_secao.parquet"],
     "resultado_eleitorado": ["ouro/resultado_eleitorado_por_secao", "ouro/resultado_eleitorado_por_secao.parquet"],
     "base_gold": ["ouro/base_gold_global", "ouro/base_gold_global.parquet"],
@@ -43,10 +94,16 @@ TABLE_CANDIDATES: dict[str, list[str]] = {
     "sim_partidos_municipios": ["preditivo_2026/parquet/partidos_2026_municipios.parquet", "preditivo_2026/tabelas/partidos_2026_municipios.csv"],
     "sim_partidos_correlacao": ["preditivo_2026/parquet/partidos_2026_correlacao_historica.parquet", "preditivo_2026/tabelas/partidos_2026_correlacao_historica.csv"],
     "cluster_voter_personas": [
+        "ouro/brasil/clusters_eleitores",
+        "ouro/estadual/clusters_eleitores",
+        "ouro/municipal/clusters_eleitores",
         "global/correlacao_codigos/clusters/parquet/clusters_eleitores_personas.parquet",
         "global/correlacao_codigos/clusters/tabelas/clusters_eleitores_personas.csv",
     ],
     "cluster_result_personas": [
+        "ouro/brasil/clusters_eleitores_resultado",
+        "ouro/estadual/clusters_eleitores_resultado",
+        "ouro/municipal/clusters_eleitores_resultado",
         "global/correlacao_codigos/clusters/parquet/clusters_personas.parquet",
         "global/correlacao_codigos/clusters/tabelas/clusters_personas.csv",
     ],
@@ -57,6 +114,52 @@ TABLE_CANDIDATES: dict[str, list[str]] = {
 }
 
 NULL_WORDS = {"", "nan", "none", "null", "<na>", "#nulo#", "sem valor", "sem_valor", "geral", "nao informado"}
+
+
+class PdfRunLogger:
+    def __init__(self, out_pdf: Path, verbose: bool = True, log_dir: Path | None = None):
+        root = log_dir or out_pdf.parent / "logs"
+        root.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        stem = out_pdf.stem
+        self.jsonl_path = root / f"{stem}_{stamp}_eventos.jsonl"
+        self.text_path = root / f"{stem}_{stamp}.log"
+        self.graphs_path = root / f"{stem}_{stamp}_graficos.jsonl"
+        self.verbose = bool(verbose)
+        logging.basicConfig(
+            level=logging.INFO if verbose else logging.WARNING,
+            format="%(asctime)s | %(levelname)s | %(message)s",
+            handlers=[
+                logging.StreamHandler(sys.stdout),
+                logging.FileHandler(self.text_path, encoding="utf-8"),
+            ],
+            force=True,
+        )
+
+    def event(self, etapa: str, evento: str, **data: Any) -> None:
+        payload = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "epoch": round(time.time(), 3),
+            "etapa": etapa,
+            "evento": evento,
+            **data,
+        }
+        with self.jsonl_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+        msg = f"[{etapa}] {evento}"
+        if data:
+            msg += " | " + " | ".join(f"{k}={v}" for k, v in data.items() if k not in {"sql"})
+        logging.info(msg)
+
+    def graph(self, **data: Any) -> None:
+        payload = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "epoch": round(time.time(), 3),
+            **data,
+        }
+        with self.graphs_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+        self.event("grafico", str(data.get("evento", "grafico")), **{k: v for k, v in data.items() if k != "evento"})
 
 
 def lit(value: Any) -> str:
@@ -101,11 +204,14 @@ def sql_meaningful(column: str) -> str:
 
 
 class DuckStore:
-    def __init__(self, run_path: Path, threads: int = 4):
+    def __init__(self, run_path: Path, threads: int = 4, logger: PdfRunLogger | None = None):
         self.run_path = run_path
+        self.logger = logger
         self.con = duckdb.connect(database=":memory:")
         self.con.execute(f"PRAGMA threads={max(1, int(threads or 1))}")
         self.con.execute("PRAGMA preserve_insertion_order=false")
+        if self.logger:
+            self.logger.event("duckdb", "conexao_iniciada", run=str(run_path), threads=max(1, int(threads or 1)))
 
     def close(self) -> None:
         self.con.close()
@@ -115,9 +221,15 @@ class DuckStore:
             path = self.run_path / rel
             if path.is_dir():
                 if next(path.rglob("*.parquet"), None) is not None:
+                    if self.logger:
+                        self.logger.event("fonte", "dataset_encontrado", chave=key, caminho=str(path), tipo="diretorio_parquet")
                     return path
             elif path.exists():
+                if self.logger:
+                    self.logger.event("fonte", "dataset_encontrado", chave=key, caminho=str(path), tipo=path.suffix.lower() or "arquivo")
                 return path
+        if self.logger:
+            self.logger.event("fonte", "dataset_ausente", chave=key)
         return None
 
     def expr(self, key: str) -> str | None:
@@ -133,9 +245,18 @@ class DuckStore:
         return f"read_csv_auto({quoted}, delim=';', header=true, all_varchar=true, ignore_errors=true)"
 
     def query(self, sql: str) -> pd.DataFrame:
+        started = time.perf_counter()
+        if self.logger:
+            compact_sql = " ".join(str(sql).split())
+            self.logger.event("consulta", "inicio", sql=compact_sql[:2000])
         try:
-            return self.con.execute(sql).fetchdf()
+            df = self.con.execute(sql).fetchdf()
+            if self.logger:
+                self.logger.event("consulta", "fim", linhas=len(df), colunas=len(df.columns), duracao_segundos=round(time.perf_counter() - started, 3))
+            return df
         except Exception as exc:
+            if self.logger:
+                self.logger.event("consulta", "erro", erro=str(exc), duracao_segundos=round(time.perf_counter() - started, 3))
             return pd.DataFrame({"erro": [str(exc)]})
 
     def table(self, key: str, limit: int = 1000) -> pd.DataFrame:
@@ -171,10 +292,11 @@ class DuckStore:
 
 
 class PdfReport:
-    def __init__(self, path: Path, title: str, max_pages: int = 1000):
+    def __init__(self, path: Path, title: str, max_pages: int = 1000, logger: PdfRunLogger | None = None):
         self.path = path
         self.title = title
         self.max_pages = max(1, int(max_pages or 1000))
+        self.logger = logger
         self.width, self.height = A4
         self.canvas = canvas.Canvas(str(path), pagesize=A4)
         self.page = 0
@@ -185,6 +307,8 @@ class PdfReport:
     def close(self) -> None:
         if self.page == 0:
             self.new_page("Relatorio vazio")
+        if self.logger:
+            self.logger.event("pdf", "salvando", arquivo=str(self.path), paginas=self.page)
         self.canvas.save()
 
     def can_add_page(self) -> bool:
@@ -192,10 +316,14 @@ class PdfReport:
 
     def new_page(self, heading: str = "") -> bool:
         if self.page >= self.max_pages:
+            if self.logger:
+                self.logger.event("pdf", "limite_paginas_atingido", max_pages=self.max_pages, heading=heading)
             return False
         if self.page:
             self.canvas.showPage()
         self.page += 1
+        if self.logger:
+            self.logger.event("pdf", "nova_pagina", pagina=self.page, titulo=heading)
         self.y = self.height - self.margin
         self.canvas.setFillColor(colors.HexColor("#111827"))
         self.canvas.setFont("Helvetica-Bold", 9)
@@ -244,6 +372,8 @@ class PdfReport:
     def cards(self, items: list[tuple[str, str]], columns: int = 3) -> None:
         if not items:
             return
+        if self.logger:
+            self.logger.event("pdf", "cards", quantidade=len(items), colunas=columns)
         card_w = (self.width - 2 * self.margin - (columns - 1) * 10) / columns
         card_h = 58
         for i, (title, value) in enumerate(items):
@@ -266,8 +396,18 @@ class PdfReport:
                 self.y -= card_h + 12
 
     def hbar(self, title: str, rows: list[tuple[str, float, str]], max_rows: int = 12) -> None:
+        original_rows = len(rows)
         rows = [(a, float(b or 0), c) for a, b, c in rows if meaningful(a)][:max_rows]
         if not rows:
+            if self.logger:
+                self.logger.graph(
+                    evento="grafico_sem_dados",
+                    tipo="barra_horizontal_reportlab",
+                    titulo=title,
+                    linhas_recebidas=original_rows,
+                    linhas_usadas=0,
+                    metodo="sem desenho; dados vazios apos filtro de valores nulos/sem valor",
+                )
             self.paragraph(f"{title}: sem dados disponiveis.")
             return
         chart_h = 24 + len(rows) * 18
@@ -276,6 +416,20 @@ class PdfReport:
         max_val = max([abs(v) for _, v, _ in rows] or [1]) or 1
         label_w = 160
         bar_w = self.width - 2 * self.margin - label_w - 70
+        if self.logger:
+            self.logger.graph(
+                evento="grafico_gerado",
+                tipo="barra_horizontal_reportlab",
+                titulo=title,
+                pagina=self.page,
+                linhas_recebidas=original_rows,
+                linhas_usadas=len(rows),
+                top_n=max_rows,
+                max_valor=max_val,
+                largura_util_barras=round(bar_w, 2),
+                metodo="ReportLab canvas.rect; largura = largura_util_barras * valor / max_valor; uma barra por linha",
+                dados=[{"label": a, "valor": b, "sufixo": c} for a, b, c in rows[:max_rows]],
+            )
         self.canvas.setFont("Helvetica", 8)
         for idx, (label, value, suffix) in enumerate(rows):
             y = self.y - idx * 18
@@ -292,8 +446,12 @@ class PdfReport:
 
     def table(self, title: str, df: pd.DataFrame, cols: list[str], limit: int = 12) -> None:
         if df is None or df.empty:
+            if self.logger:
+                self.logger.event("pdf", "tabela_sem_dados", titulo=title)
             self.paragraph(f"{title}: sem dados disponiveis.")
             return
+        if self.logger:
+            self.logger.event("pdf", "tabela", titulo=title, linhas_recebidas=len(df), limite=limit, colunas_solicitadas=",".join(cols))
         self.ensure_space(80, title)
         self.subheading(title)
         work = df.head(limit).copy()
@@ -317,28 +475,219 @@ class PdfReport:
         self.y -= 6
 
 
+def polars_to_pandas(data: Any) -> pd.DataFrame:
+    return pd.DataFrame(polars_records(data))
+
+
+def add_polars_party_section(pdf: PdfReport, title: str, data: Any, top_n: int) -> None:
+    df = polars_to_pandas(data)
+    pdf.table(title, df, ["partido", "share_pred_2026", "votos_pred_2026", "perfil_eleitor_2026"], limit=top_n)
+    if not df.empty and "partido" in df.columns:
+        rows = [
+            (
+                str(r.get("partido", "")),
+                pd.to_numeric(r.get("share_pred_2026"), errors="coerce"),
+                fmt_pct(r.get("share_pred_2026")),
+            )
+            for _, r in df.head(top_n).iterrows()
+        ]
+        pdf.hbar(title, rows, max_rows=top_n)
+
+
+def add_polars_cluster_section(pdf: PdfReport, title: str, data: Any, top_n: int) -> None:
+    df = polars_to_pandas(data)
+    pdf.table(title, df, ["ano", "cluster_id", "perfil_combinado", "partido", "share_cluster", "eleitorado", "votos_proxy"], limit=top_n)
+    if df.empty or "cluster_id" not in df.columns:
+        return
+    value_col = next((col for col in ["share_cluster", "votos_proxy", "eleitorado"] if col in df.columns), None)
+    if not value_col:
+        return
+    rows = [
+        (
+            f"Cluster {r.get('cluster_id', '')}",
+            pd.to_numeric(r.get(value_col), errors="coerce"),
+            str(r.get("perfil_combinado") or r.get("descricao") or "")[:80],
+        )
+        for _, r in df.head(top_n).iterrows()
+    ]
+    pdf.hbar(title, rows, max_rows=top_n)
+
+
+def build_report_polars(args: argparse.Namespace, run: Path, out: Path) -> Path:
+    modalidade = normalize_modalidade(getattr(args, "modalidade_analise", "completa"))
+    log_dir = Path(args.log_dir).expanduser() if args.log_dir else None
+    if log_dir and not log_dir.is_absolute():
+        log_dir = (Path.cwd() / log_dir).resolve()
+    logger = PdfRunLogger(out, verbose=not args.quiet, log_dir=log_dir)
+    logger.event("relatorio", "inicio", run=str(run), saida=str(out), query_engine="polars", modalidade=modalidade, max_pages=args.max_pages, top_n=args.top_n)
+    store = PolarsStore(run)  # type: ignore[misc]
+    pdf = PdfReport(out, f"Relatorio eleitoral - {MODE_LABELS.get(modalidade, modalidade)}", max_pages=args.max_pages, logger=logger)
+    try:
+        add_cover(pdf, run)
+        add_methodology(pdf)
+        add_graph_generation_methodology(pdf, logger)
+        pdf.new_page("Arquitetura de consulta")
+        pdf.paragraph(
+            "Este PDF foi gerado com Polars LazyFrame como engine principal. "
+            "Os Parquets sao escaneados de forma preguiçosa, com filtros por ano, UF e municipio aplicados antes do collect."
+        )
+        pdf.cards(
+            [
+                ("Engine", "Polars LazyFrame"),
+                ("Modalidade", MODE_LABELS.get(modalidade, modalidade)),
+                ("Baixo nivel", "PyArrow/Parquet"),
+                ("Batch pesado", "Spark opcional"),
+                ("Fallback", "DuckDB"),
+            ],
+            columns=2,
+        )
+        pdf.paragraph("Recursos ativos nesta modalidade: " + ", ".join(modalidade_info(modalidade).get("features", [])))
+
+        progress = store.ouro_resultados_summary()
+        pdf.new_page("Progresso da camada ouro")
+        pdf.cards(
+            [
+                ("Fatias totais", fmt_int(progress.get("total"))),
+                ("Concluidas", fmt_int(progress.get("concluidas"))),
+                ("Pendentes", fmt_int(progress.get("pendentes"))),
+                ("UFs pendentes", fmt_int(len(progress.get("ufs_pendentes") or []))),
+            ],
+            columns=2,
+        )
+        pdf.paragraph("UFs pendentes: " + ", ".join(progress.get("ufs_pendentes") or []) if progress.get("ufs_pendentes") else "Sem pendencias registradas no manifesto.")
+
+        pdf.new_page("Brasil")
+        if modalidade_allows(modalidade, "partido"):
+            partidos = store.party_prediction("sim_partidos_brasil", cenario="base", limit=args.top_n)
+            fonte = "simulacao_2026"
+            if getattr(partidos, "height", 0) == 0:
+                partidos = store.historical_party_results(limit=args.top_n)
+                fonte = "historico_processado"
+            pdf.paragraph(f"Fonte dos partidos: {fonte}.")
+            add_polars_party_section(pdf, "Brasil por partido", partidos, args.top_n)
+        if modalidade_allows(modalidade, "perfil"):
+            perfis = polars_to_pandas(store.top_profiles("brasil", limit=args.top_n))
+            pdf.table("Top perfis Brasil", perfis, ["ano", "perfil_combinado", "share_perfil", "eleitorado"], limit=args.top_n)
+            perfil_discreto = polars_to_pandas(store.profile_distribution(limit=args.top_n * 2))
+            pdf.table("Perfil discreto Brasil", perfil_discreto, ["ano", "dimensao_perfil", "valor_perfil", "share", "peso"], limit=args.top_n)
+        if modalidade_allows(modalidade, "candidato"):
+            pdf.table("Resultado por candidato - Brasil", polars_to_pandas(store.entity_results(entity="candidato", nivel="brasil", limit=args.top_n)), ["ano", "entidade", "votos", "share_votos", "rank_entidade"], limit=args.top_n)
+            pdf.table("Perfil por candidato - Brasil", polars_to_pandas(store.entity_profiles(entity="candidato", nivel="brasil", limit=args.top_n)), ["ano", "entidade", "perfil_combinado", "share_perfil_na_entidade"], limit=args.top_n)
+        if modalidade_allows(modalidade, "cluster"):
+            add_polars_cluster_section(pdf, "Clusters Brasil - eleitorado", store.cluster_personas(tipo="eleitores", nivel="brasil", limit=args.top_n), args.top_n)
+            add_polars_cluster_section(pdf, "Clusters Brasil - eleitorado + partido", store.cluster_personas(tipo="resultado", nivel="brasil", limit=args.top_n), args.top_n)
+
+        ufs = [x.strip().upper() for x in str(args.ufs or "").split(",") if x.strip()]
+        if not ufs:
+            ufs = list(progress.get("ufs_concluidas") or [])[:10]
+        for uf in ufs:
+            if not pdf.can_add_page():
+                break
+            pdf.new_page(f"Estado {uf}")
+            metrics = polars_to_pandas(store.metrics_by_year("timeline_uf", uf=uf))
+            pdf.table(f"Metricas {uf}", metrics, ["ano", "eleitorado", "comparecimento_estimado", "abstencao_estimado"], limit=args.top_n)
+            if modalidade_allows(modalidade, "partido"):
+                state_parties = store.party_prediction("sim_partidos_estados", uf=uf, cenario="base", limit=args.top_n)
+                state_source = "simulacao_2026"
+                if getattr(state_parties, "height", 0) == 0:
+                    state_parties = store.historical_party_results(uf=uf, limit=args.top_n)
+                    state_source = "historico_processado"
+                pdf.paragraph(f"Fonte dos partidos em {uf}: {state_source}.")
+                add_polars_party_section(pdf, f"{uf} por partido", state_parties, args.top_n)
+            if modalidade_allows(modalidade, "perfil"):
+                state_profiles = polars_to_pandas(store.top_profiles("estado", uf=uf, limit=args.top_n))
+                pdf.table(f"Top perfis {uf}", state_profiles, ["ano", "perfil_combinado", "share_perfil", "eleitorado"], limit=args.top_n)
+            if modalidade_allows(modalidade, "candidato"):
+                pdf.table(f"Resultado por candidato - {uf}", polars_to_pandas(store.entity_results(entity="candidato", nivel="estado", uf=uf, limit=args.top_n)), ["ano", "entidade", "votos", "share_votos", "rank_entidade"], limit=args.top_n)
+                pdf.table(f"Perfil por candidato - {uf}", polars_to_pandas(store.entity_profiles(entity="candidato", nivel="estado", uf=uf, limit=args.top_n)), ["ano", "entidade", "perfil_combinado", "share_perfil_na_entidade"], limit=args.top_n)
+            if modalidade_allows(modalidade, "cluster"):
+                add_polars_cluster_section(pdf, f"Clusters {uf} - eleitorado", store.cluster_personas(tipo="eleitores", nivel="estado", uf=uf, limit=args.top_n), args.top_n)
+                add_polars_cluster_section(pdf, f"Clusters {uf} - eleitorado + partido", store.cluster_personas(tipo="resultado", nivel="estado", uf=uf, limit=args.top_n), args.top_n)
+
+            municipios = store.municipios(uf)[: int(args.municipios_por_uf or 0)] if modalidade_allows(modalidade, "municipio") else []
+            for municipio in municipios:
+                if not pdf.can_add_page():
+                    break
+                label = municipio.get("label", "")
+                value = municipio.get("value", "")
+                pdf.new_page(f"Municipio {label} - {uf}")
+                if modalidade_allows(modalidade, "partido"):
+                    mun_parties = store.party_prediction("sim_partidos_municipios", uf=uf, municipio=value, cenario="base", limit=args.top_n)
+                    mun_source = "simulacao_2026"
+                    if getattr(mun_parties, "height", 0) == 0:
+                        mun_parties = store.historical_party_results(uf=uf, municipio=value, limit=args.top_n)
+                        mun_source = "historico_processado"
+                    pdf.paragraph(f"Fonte dos partidos em {label}: {mun_source}.")
+                    add_polars_party_section(pdf, f"{label} por partido", mun_parties, args.top_n)
+                if modalidade_allows(modalidade, "perfil"):
+                    mun_profiles = polars_to_pandas(store.top_profiles("municipio", uf=uf, municipio=value, limit=args.top_n))
+                    pdf.table(f"Top perfis {label}", mun_profiles, ["ano", "perfil_combinado", "share_perfil", "eleitorado"], limit=args.top_n)
+                if modalidade_allows(modalidade, "candidato"):
+                    pdf.table(f"Resultado por candidato - {label}", polars_to_pandas(store.entity_results(entity="candidato", nivel="municipio", uf=uf, municipio=value, limit=args.top_n)), ["ano", "entidade", "votos", "share_votos", "rank_entidade"], limit=args.top_n)
+                    pdf.table(f"Perfil por candidato - {label}", polars_to_pandas(store.entity_profiles(entity="candidato", nivel="municipio", uf=uf, municipio=value, limit=args.top_n)), ["ano", "entidade", "perfil_combinado", "share_perfil_na_entidade"], limit=args.top_n)
+                if modalidade_allows(modalidade, "cluster"):
+                    add_polars_cluster_section(pdf, f"Clusters {label} - eleitorado", store.cluster_personas(tipo="eleitores", nivel="municipio", uf=uf, municipio=value, limit=args.top_n), args.top_n)
+                    add_polars_cluster_section(pdf, f"Clusters {label} - eleitorado + partido", store.cluster_personas(tipo="resultado", nivel="municipio", uf=uf, municipio=value, limit=args.top_n), args.top_n)
+
+        pdf.new_page("Notas finais")
+        pdf.paragraph(
+            "O modo Polars do PDF usa a mesma arquitetura da API: consultas lazy sobre Parquet, filtros territoriais antes da materializacao e graficos desenhados com ReportLab."
+        )
+    finally:
+        pdf.close()
+        logger.event("relatorio", "fim", saida=str(out), paginas=pdf.page, query_engine="polars", modalidade=modalidade, log_texto=str(logger.text_path), log_eventos=str(logger.jsonl_path), log_graficos=str(logger.graphs_path))
+    return out
+
+
 def build_report(args: argparse.Namespace) -> Path:
+    modalidade = normalize_modalidade(getattr(args, "modalidade_analise", "completa"))
     run = Path(args.run).expanduser().resolve()
     out = Path(args.out).expanduser() if args.out else run / "relatorios" / "relatorio_completo_eleitoral.pdf"
     if not out.is_absolute():
         out = (Path.cwd() / out).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
+    if getattr(args, "query_engine", "polars") == "polars" and polars_available():
+        return build_report_polars(args, run, out)
 
-    store = DuckStore(run, threads=args.duckdb_threads)
-    pdf = PdfReport(out, "Relatorio completo eleitoral - Dados Abertos TSE", max_pages=args.max_pages)
+    log_dir = Path(args.log_dir).expanduser() if args.log_dir else None
+    if log_dir and not log_dir.is_absolute():
+        log_dir = (Path.cwd() / log_dir).resolve()
+    logger = PdfRunLogger(out, verbose=not args.quiet, log_dir=log_dir)
+    logger.event("relatorio", "inicio", run=str(run), saida=str(out), modalidade=modalidade, max_pages=args.max_pages, top_n=args.top_n)
+
+    store = DuckStore(run, threads=args.duckdb_threads, logger=logger)
+    pdf = PdfReport(out, f"Relatorio eleitoral - {MODE_LABELS.get(modalidade, modalidade)}", max_pages=args.max_pages, logger=logger)
+
+    def run_section(name: str, fn: Any, *fn_args: Any) -> None:
+        started = time.perf_counter()
+        logger.event("secao", "inicio", nome=name)
+        try:
+            fn(*fn_args)
+            logger.event("secao", "fim", nome=name, duracao_segundos=round(time.perf_counter() - started, 3), pagina_atual=pdf.page)
+        except Exception as exc:
+            logger.event("secao", "erro", nome=name, erro=str(exc), duracao_segundos=round(time.perf_counter() - started, 3))
+            pdf.new_page(f"Erro na secao {name}")
+            pdf.paragraph(f"A secao {name} nao foi gerada por erro: {exc}")
+
     try:
-        add_cover(pdf, run)
-        add_methodology(pdf)
-        add_inventory(pdf, store)
-        add_national_analysis(pdf, store, args)
-        add_profile_analysis(pdf, store, args)
-        add_party_and_candidate_analysis(pdf, store, args)
-        add_cluster_analysis(pdf, store, args)
-        add_simulation_analysis(pdf, store, args)
-        add_state_pages(pdf, store, args)
-        add_municipality_pages(pdf, store, args)
-        if args.incluir_secoes:
-            add_section_pages(pdf, store, args)
+        run_section("capa", add_cover, pdf, run)
+        run_section("metodologia", add_methodology, pdf)
+        run_section("como_graficos_sao_gerados", add_graph_generation_methodology, pdf, logger)
+        run_section("inventario", add_inventory, pdf, store)
+        run_section("analise_nacional", add_national_analysis, pdf, store, args)
+        if modalidade_allows(modalidade, "perfil"):
+            run_section("perfil_eleitor", add_profile_analysis, pdf, store, args)
+        if modalidade_allows(modalidade, "partido") or modalidade_allows(modalidade, "candidato"):
+            run_section("partidos_candidatos", add_party_and_candidate_analysis, pdf, store, args)
+        if modalidade_allows(modalidade, "cluster"):
+            run_section("clusters", add_cluster_analysis, pdf, store, args)
+        if modalidade_allows(modalidade, "simulacao"):
+            run_section("simulacao", add_simulation_analysis, pdf, store, args)
+        run_section("estados", add_state_pages, pdf, store, args)
+        if modalidade_allows(modalidade, "municipio"):
+            run_section("municipios", add_municipality_pages, pdf, store, args)
+        if args.incluir_secoes and modalidade_allows(modalidade, "secao"):
+            run_section("secoes", add_section_pages, pdf, store, args)
         pdf.new_page("Notas finais")
         pdf.paragraph(
             "Este relatorio foi gerado automaticamente a partir dos dados tratados em Parquet. "
@@ -347,6 +696,7 @@ def build_report(args: argparse.Namespace) -> Path:
     finally:
         pdf.close()
         store.close()
+        logger.event("relatorio", "fim", saida=str(out), paginas=pdf.page, modalidade=modalidade, log_texto=str(logger.text_path), log_eventos=str(logger.jsonl_path), log_graficos=str(logger.graphs_path))
     return out
 
 
@@ -378,6 +728,34 @@ def add_methodology(pdf: PdfReport) -> None:
     ]
     for text in paragraphs:
         pdf.paragraph(text)
+
+
+def add_graph_generation_methodology(pdf: PdfReport, logger: PdfRunLogger) -> None:
+    pdf.new_page("Como os graficos do PDF sao gerados")
+    pdf.paragraph(
+        "Os graficos do PDF sao criados diretamente com ReportLab, sem transformar o PDF em HTML. "
+        "O gerador consulta os Parquets com DuckDB, transforma cada resultado em linhas agregadas e desenha barras, cards e tabelas no canvas do PDF."
+    )
+    pdf.subheading("Fluxo de cada grafico")
+    steps = [
+        "1. Escolhe a camada de dados: normalmente ouro; quando a simulacao nao existe, usa os dados historicos ja processados.",
+        "2. Monta uma consulta DuckDB sobre read_parquet ou read_csv_auto, sem carregar a base inteira antes da consulta.",
+        "3. Converte o resultado em DataFrame pequeno, limitado por --top-n e pelos limites de cada secao.",
+        "4. Remove labels nulos, 'sem valor', codigos sem legenda e categorias vazias.",
+        "5. Para grafico de barra horizontal, calcula max_valor e desenha cada barra com canvas.rect.",
+        "6. A largura da barra e proporcional: largura = largura_util * valor / max_valor.",
+        "7. Cada grafico grava um evento em *_graficos.jsonl com titulo, linhas usadas, escala, metodo e dados plotados.",
+    ]
+    for step in steps:
+        pdf.paragraph(step)
+    pdf.subheading("Arquivos de log gerados")
+    pdf.paragraph(f"Log textual: {logger.text_path}")
+    pdf.paragraph(f"Eventos estruturados: {logger.jsonl_path}")
+    pdf.paragraph(f"Manifesto dos graficos: {logger.graphs_path}")
+    pdf.paragraph(
+        "O manifesto dos graficos e o arquivo mais importante para auditoria visual: cada linha JSONL descreve um grafico, "
+        "incluindo o tipo, pagina, top_n, quantidade de linhas recebidas/usadas e os valores efetivamente desenhados."
+    )
 
 
 def add_inventory(pdf: PdfReport, store: DuckStore) -> None:
@@ -450,8 +828,13 @@ def add_profile_analysis(pdf: PdfReport, store: DuckStore, args: argparse.Namesp
 
 
 def add_party_and_candidate_analysis(pdf: PdfReport, store: DuckStore, args: argparse.Namespace) -> None:
+    modalidade = normalize_modalidade(getattr(args, "modalidade_analise", "completa"))
     pdf.new_page("Partidos e candidatos")
     for key, label in [("perfil_partido", "Perfil do eleitor por partido"), ("perfil_candidato", "Perfil do eleitor por candidato")]:
+        if key == "perfil_partido" and not modalidade_allows(modalidade, "partido"):
+            continue
+        if key == "perfil_candidato" and not modalidade_allows(modalidade, "candidato"):
+            continue
         expr = store.expr(key)
         if not expr:
             pdf.paragraph(f"{label}: tabela nao encontrada.")
@@ -513,6 +896,7 @@ def selected_ufs(store: DuckStore, args: argparse.Namespace) -> list[str]:
 
 
 def add_state_pages(pdf: PdfReport, store: DuckStore, args: argparse.Namespace) -> None:
+    modalidade = normalize_modalidade(getattr(args, "modalidade_analise", "completa"))
     for uf in selected_ufs(store, args):
         if not pdf.can_add_page():
             return
@@ -522,7 +906,7 @@ def add_state_pages(pdf: PdfReport, store: DuckStore, args: argparse.Namespace) 
             df = store.query(f"select * from {expr} where uf = {lit(uf)} order by ano limit 100")
             pdf.table(f"Timeline {uf}", df, ["ano", "uf", "eleitorado", "comparecimento_estimado", "abstencao_estimado"], limit=args.top_n)
         expr = store.expr("sim_partidos_estados")
-        if expr:
+        if expr and modalidade_allows(modalidade, "partido"):
             df = store.query(
                 f"""
                 select *
@@ -536,6 +920,9 @@ def add_state_pages(pdf: PdfReport, store: DuckStore, args: argparse.Namespace) 
 
 
 def add_municipality_pages(pdf: PdfReport, store: DuckStore, args: argparse.Namespace) -> None:
+    modalidade = normalize_modalidade(getattr(args, "modalidade_analise", "completa"))
+    if not modalidade_allows(modalidade, "municipio"):
+        return
     expr = store.expr("municipal")
     if not expr:
         return
@@ -558,7 +945,7 @@ def add_municipality_pages(pdf: PdfReport, store: DuckStore, args: argparse.Name
             pdf.new_page(f"Municipio {name} - {uf}")
             pdf.cards([("UF", uf), ("Municipio", name), ("Eleitorado", fmt_int(mun.get("eleitorado")))], columns=3)
             sim_expr = store.expr("sim_partidos_municipios")
-            if sim_expr and cd:
+            if sim_expr and cd and modalidade_allows(modalidade, "partido"):
                 df = store.query(
                     f"""
                     select *
@@ -570,7 +957,7 @@ def add_municipality_pages(pdf: PdfReport, store: DuckStore, args: argparse.Name
                 )
                 pdf.table("Simulacao partidaria municipal", df, ["cenario", "partido", "share_pred_2026", "perfil_eleitor_2026"], limit=args.top_n)
             top_expr = store.expr("top10_perfis")
-            if top_expr and cd:
+            if top_expr and cd and modalidade_allows(modalidade, "perfil"):
                 df = store.query(
                     f"""
                     select *
@@ -609,6 +996,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Gera relatorio PDF completo a partir da camada ouro do banco eleitoral.")
     parser.add_argument("--run", default="dados/banco_eleitoral", help="Pasta do banco/run. Ex.: dados/banco_eleitoral")
     parser.add_argument("--out", default="", help="Arquivo PDF de saida. Padrao: <run>/relatorios/relatorio_completo_eleitoral.pdf")
+    parser.add_argument("--modalidade-analise", choices=ANALYSIS_MODES, default="completa", help="Recorte do PDF: completa, estados_brasil, eleitor, candidato, eleitor_partido ou eleitor_candidato_partido.")
     parser.add_argument("--max-pages", type=int, default=1000, help="Limite maximo de paginas do PDF.")
     parser.add_argument("--top-n", type=int, default=15, help="Quantidade de itens por ranking/grafico.")
     parser.add_argument("--ufs", default="", help="Lista de UFs separadas por virgula. Vazio usa todas detectadas.")
@@ -616,6 +1004,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--incluir-secoes", action="store_true", help="Inclui paginas com amostra de secoes eleitorais.")
     parser.add_argument("--secoes-por-uf", type=int, default=80, help="Quantidade de secoes listadas por UF quando --incluir-secoes.")
     parser.add_argument("--duckdb-threads", type=int, default=4, help="Threads DuckDB usadas nas consultas do relatorio.")
+    parser.add_argument("--query-engine", choices=["polars", "duckdb"], default="polars", help="Engine de consulta do PDF. Padrao: polars; duckdb fica como fallback legado.")
+    parser.add_argument("--log-dir", default="", help="Pasta para logs detalhados do PDF. Padrao: <saida_pdf>/logs.")
+    parser.add_argument("--quiet", action="store_true", help="Reduz logs no terminal, mantendo arquivos de log.")
     return parser.parse_args()
 
 

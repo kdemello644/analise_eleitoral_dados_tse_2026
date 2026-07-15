@@ -9,7 +9,7 @@ import logging
 import sys
 
 from .config import parse_args
-from .clean_database import CleanDatabaseConfig, build_clean_database, run_clean_database_analyses
+from .clean_database import CleanDatabaseConfig, build_clean_database, run_clean_database_analyses, write_pipeline_event
 from .json_reader import find_json_files
 from .stage_global import run_global_stage
 from .stage_individual import run_individual_stage
@@ -67,7 +67,7 @@ def load_previous_global_info(out: Path) -> dict[str, Any]:
 def main() -> None:
     cfg = parse_args()
 
-    if cfg.modo in {"banco", "analise_banco"}:
+    if cfg.modo in {"banco", "analise_banco", "dashboard_banco"}:
         run_clean_database_mode(cfg)
         return
 
@@ -83,9 +83,11 @@ def main() -> None:
     logging.info("Entrada: %s", cfg.dados)
     logging.info("Saida: %s", cfg.out)
     logging.info("Modo: %s", cfg.modo)
+    write_pipeline_event(cfg.out, "pipeline", "inicio", modo=cfg.modo, entrada=str(cfg.dados), saida=str(cfg.out))
 
     json_files = find_json_files(cfg.dados, include_metadata=cfg.incluir_metadados_json)
     logging.info("Arquivos JSON/JSONL/NDJSON de dados encontrados: %s", len(json_files))
+    write_pipeline_event(cfg.out, "pipeline", "arquivos_detectados", total_json=len(json_files))
 
     if not json_files:
         print(f"[ERRO] Nenhum JSON/JSONL/NDJSON de dados encontrado em: {cfg.dados}")
@@ -96,17 +98,23 @@ def main() -> None:
         results = load_previous_results(cfg.out)
 
     if cfg.modo in {"inventario", "individual", "completo"}:
+        write_pipeline_event(cfg.out, "pipeline", "inicio_etapa", etapa="individual", arquivos=len(json_files))
         results = run_individual_stage(json_files, cfg)
+        write_pipeline_event(cfg.out, "pipeline", "fim_etapa", etapa="individual", resultados=len(results))
 
     if cfg.modo == "inventario":
+        write_pipeline_event(cfg.out, "pipeline", "inicio_etapa", etapa="global")
         global_info = run_global_stage(results, cfg)
+        write_pipeline_event(cfg.out, "pipeline", "fim_etapa", etapa="global", outputs=global_info)
         pred_info: dict[str, Any] = {}
     else:
         global_info: dict[str, Any] = {}
         if cfg.modo in {"global", "completo"}:
             if not results:
                 results = load_previous_results(cfg.out)
+            write_pipeline_event(cfg.out, "pipeline", "inicio_etapa", etapa="global", resultados=len(results))
             global_info = run_global_stage(results, cfg)
+            write_pipeline_event(cfg.out, "pipeline", "fim_etapa", etapa="global", outputs=global_info)
         elif cfg.modo == "preditivo":
             global_info = load_previous_global_info(cfg.out)
 
@@ -114,7 +122,9 @@ def main() -> None:
         if cfg.predict_2026 or cfg.modo in {"preditivo", "completo"}:
             if not global_info:
                 global_info = load_previous_global_info(cfg.out)
+            write_pipeline_event(cfg.out, "pipeline", "inicio_etapa", etapa="simulacao_2026")
             pred_info = run_simulation_stage(global_info, cfg)
+            write_pipeline_event(cfg.out, "pipeline", "fim_etapa", etapa="simulacao_2026", outputs=pred_info)
             if pred_info.get("status") == "ok":
                 pred_info["global_dashboard_atualizado"] = update_global_dashboard_with_simulation(cfg, pred_info)
                 pred_info["relatorio_executivo"] = generate_executive_report(cfg, global_info, pred_info)
@@ -174,6 +184,7 @@ def main() -> None:
     print(f"Simulacao:          {cfg.out / 'preditivo_2026' / 'relatorio_simulacao.html'}")
     print(f"Log:                {log_path}")
     print("=" * 100)
+    write_pipeline_event(cfg.out, "pipeline", "fim", modo=cfg.modo, arquivos_json=len(json_files), arquivos_ok=ok, arquivos_erro=error)
 
 
 def run_clean_database_mode(cfg) -> None:
@@ -195,6 +206,11 @@ def run_clean_database_mode(cfg) -> None:
         resume=cfg.resume,
         include_metadata=cfg.incluir_metadados_json,
         skip_heavy_analyses=cfg.banco_skip_heavy_analyses,
+        only_states_brasil=cfg.banco_only_states_brasil,
+        uf_filter=tuple(x.strip().upper() for x in str(cfg.banco_ufs or "").split(",") if x.strip()),
+        skip_clusters=cfg.banco_skip_clusters,
+        analysis_mode=cfg.banco_analysis_mode,
+        max_municipios_por_uf=cfg.banco_max_municipios_por_uf,
         delete_source_after_success=cfg.banco_delete_source_after_success,
         ouro_parallel_aggressive=cfg.banco_ouro_parallel_aggressive,
         auto_tune_info=cfg.banco_auto_tune_info,
@@ -202,6 +218,7 @@ def run_clean_database_mode(cfg) -> None:
     )
 
     if cfg.modo == "banco":
+        write_pipeline_event(cfg.banco_out, "pipeline", "inicio_modo_banco", entrada=str(cfg.dados), banco=str(cfg.banco_out))
         summary = build_clean_database(clean_cfg)
         print("\n" + "=" * 100)
         print("BANCO ELEITORAL LIMPO CRIADO")
@@ -211,6 +228,7 @@ def run_clean_database_mode(cfg) -> None:
         print(f"Auto:   workers_por_arquivo={max(cfg.banco_workers, cfg.banco_workers_large_files)}, chunk={cfg.banco_chunk_rows}, duckdb_threads={cfg.banco_duckdb_threads}, todos_workers={cfg.banco_use_all_workers}")
         print(f"Resumo: {cfg.banco_out / '_banco_eleitoral_limpo.json'}")
         print("=" * 100)
+        write_pipeline_event(cfg.banco_out, "pipeline", "fim_modo_banco", summary=summary)
         return
 
     if not cfg.banco_out.exists() or not (cfg.banco_out / "prata").exists():
@@ -220,25 +238,44 @@ def run_clean_database_mode(cfg) -> None:
 
     cfg.banco_out.mkdir(parents=True, exist_ok=True)
     setup_logging(cfg.banco_out, cfg.log_level)
-    logging.info("Modo analise_banco: lendo banco limpo em %s", cfg.banco_out)
-    analysis_info = run_clean_database_analyses(clean_cfg)
-
     cfg.out = cfg.banco_out
     global_info = {
-        "global_gold_parquet": str(cfg.banco_out / "ouro" / "base_gold_global"),
+        "global_gold_parquet": str(cfg.banco_out / "ouro" / "municipal" / "base_secao"),
         "global_gold_csv": "",
         "municipal_parquet": str(cfg.banco_out / "ouro" / "retrato_municipal"),
+        "municipal_csv": "",
         "timeline_nacional_parquet": str(cfg.banco_out / "ouro" / "timeline_nacional.parquet"),
         "analise_eleitoral_outputs": {
             "perfil_eleitor_por_ano_parquet": str(cfg.banco_out / "ouro" / "perfil_eleitor_por_ano"),
             "perfil_eleitor_por_partido_parquet": str(cfg.banco_out / "ouro" / "perfil_eleitor_por_partido"),
+            "perfil_eleitor_por_partido": "",
             "perfil_eleitor_por_candidato_parquet": str(cfg.banco_out / "ouro" / "perfil_eleitor_por_candidato"),
             "top10_perfis_federacao_estado_municipio_parquet": str(cfg.banco_out / "ouro" / "top10_perfis_federacao_estado_municipio"),
         },
     }
+
+    if cfg.modo == "dashboard_banco":
+        setup_logging(cfg.banco_out, cfg.log_level)
+        logging.info("Modo dashboard_banco: usando somente Parquets existentes em %s", cfg.banco_out)
+        write_pipeline_event(cfg.banco_out, "pipeline", "inicio_modo_dashboard_banco", banco=str(cfg.banco_out))
+        analysis_info = {
+            "status": "ok",
+            "modo": "somente_consulta_ouro_existente",
+            "observacao": "Nao reconstruiu bronze/prata/ouro; dashboards consultam os Parquets existentes.",
+            "ouro": str(cfg.banco_out / "ouro"),
+        }
+    else:
+        logging.info("Modo analise_banco: lendo banco limpo em %s", cfg.banco_out)
+        write_pipeline_event(cfg.banco_out, "pipeline", "inicio_modo_analise_banco", banco=str(cfg.banco_out))
+        analysis_info = run_clean_database_analyses(clean_cfg)
+
     pred_info = {}
     if cfg.predict_2026 or cfg.modo == "analise_banco":
+        write_pipeline_event(cfg.banco_out, "pipeline", "inicio_etapa", etapa="simulacao_2026_banco")
         pred_info = run_simulation_stage(global_info, cfg)
+        write_pipeline_event(cfg.banco_out, "pipeline", "fim_etapa", etapa="simulacao_2026_banco", outputs=pred_info)
+        if pred_info.get("status") == "ok":
+            pred_info["relatorio_executivo"] = generate_executive_report(cfg, global_info, pred_info)
 
     save_json({"status": "ok", "analises": analysis_info, "predicao": pred_info}, cfg.banco_out / "logs" / "analise_banco_info.json")
     print("\n" + "=" * 100)
@@ -248,6 +285,7 @@ def run_clean_database_mode(cfg) -> None:
     print(f"Simulacao: {cfg.banco_out / 'preditivo_2026'}")
     print(f"Dashboard: python3 scripts/dashboard_dash_eleitoral.py --run {cfg.banco_out} --host 0.0.0.0 --port 8050")
     print("=" * 100)
+    write_pipeline_event(cfg.banco_out, "pipeline", f"fim_modo_{cfg.modo}", analises=analysis_info, predicao=pred_info)
 
 
 if __name__ == "__main__":

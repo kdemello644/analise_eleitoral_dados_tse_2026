@@ -32,6 +32,12 @@ Rodar camada `ouro`, analises e simulacao usando somente o banco limpo:
 python scripts/run_pipeline_eleitoral_json.py dados/json --modo analise_banco --banco-out dados/banco_eleitoral --predict-2026
 ```
 
+Usar a camada `ouro` ja existente sem reconstruir o banco:
+
+```bash
+python scripts/run_pipeline_eleitoral_json.py dados/banco_eleitoral --modo dashboard_banco --banco-out dados/banco_eleitoral
+```
+
 Dashboard Streamlit do mesmo run, junto com os HTMLs gerados:
 
 ```bash
