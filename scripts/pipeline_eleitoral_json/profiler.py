@@ -58,6 +58,8 @@ def role_by_name(col: str) -> str:
         return "ideologia"
     if "COLIG" in c or "FEDERACAO" in c or "FEDERAÇÃO" in c:
         return "coalizao"
+    if "GRAU" in c or "INSTRU" in c or "ESCOLAR" in c:
+        return "perfil_instrucao"
     if (
         "CANDIDATO" in c
         or "URNA" in c

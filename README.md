@@ -187,9 +187,11 @@ dados/banco_eleitoral/ouro/
     perfil_eleitor/
     contagem_colunas_perfil_eleitor/
     resultado_partido/
+    contagem_colunas_resultado_partido/
     perfil_partido/
     contagem_colunas_perfil_partido/
     resultado_candidato/
+    contagem_colunas_resultado_candidato/
     perfil_candidato/
     contagem_colunas_perfil_candidato/
     clusters_eleitores/
@@ -201,9 +203,11 @@ dados/banco_eleitoral/ouro/
     perfil_eleitor/
     contagem_colunas_perfil_eleitor/
     resultado_partido/
+    contagem_colunas_resultado_partido/
     perfil_partido/
     contagem_colunas_perfil_partido/
     resultado_candidato/
+    contagem_colunas_resultado_candidato/
     perfil_candidato/
     contagem_colunas_perfil_candidato/
     clusters_eleitores/
@@ -215,9 +219,11 @@ dados/banco_eleitoral/ouro/
     perfil_eleitor/
     contagem_colunas_perfil_eleitor/
     resultado_partido/
+    contagem_colunas_resultado_partido/
     perfil_partido/
     contagem_colunas_perfil_partido/
     resultado_candidato/
+    contagem_colunas_resultado_candidato/
     perfil_candidato/
     contagem_colunas_perfil_candidato/
     clusters_eleitores/
@@ -255,6 +261,8 @@ cd_municipio
 nm_municipio
 dimensao_perfil
 valor_perfil
+dimensao_resultado
+valor_resultado
 qtd_pessoas ou qtd_votos
 share_histograma
 rank_histograma
@@ -271,7 +279,16 @@ sexo_genero
 escolaridade
 estado_civil
 raca_cor
+entidade
+cargo
+turno
+resultado_eleitoral
+resultado_grupo
+faixa_rank
+faixa_share_votos
 ```
+
+Escolaridade/grau de instrucao e obrigatoria nessas contagens. O pipeline normaliza esse campo a partir de aliases comuns do TSE, por exemplo `perfil_instrucao`, `perfil_escolaridade`, `escolaridade`, `grau_instrucao`, `grau_escolaridade`, `ds_grau_instrucao`, `cd_grau_instrucao`, `ds_grau_escolaridade`, `cd_grau_escolaridade`, `ds_escolaridade` e `cd_escolaridade`. Codigos numericos conhecidos tambem sao convertidos para texto, como `6 -> Medio completo` e `8 -> Superior completo`.
 
 Valores nulos, vazios, `sem valor`, `nao informado`, `#NULO#` e equivalentes sao descartados antes de gravar essas tabelas. Portanto, o front e o PDF nao devem precisar filtrar lixo depois.
 
@@ -279,19 +296,25 @@ Arquivos gerados:
 
 ```text
 ouro/municipal/contagem_colunas_perfil_eleitor/
+ouro/municipal/contagem_colunas_resultado_partido/
 ouro/municipal/contagem_colunas_perfil_partido/
+ouro/municipal/contagem_colunas_resultado_candidato/
 ouro/municipal/contagem_colunas_perfil_candidato/
 ouro/municipal/contagem_colunas_clusters_eleitores/
 ouro/municipal/contagem_colunas_clusters_eleitores_resultado/
 
 ouro/estadual/contagem_colunas_perfil_eleitor/
+ouro/estadual/contagem_colunas_resultado_partido/
 ouro/estadual/contagem_colunas_perfil_partido/
+ouro/estadual/contagem_colunas_resultado_candidato/
 ouro/estadual/contagem_colunas_perfil_candidato/
 ouro/estadual/contagem_colunas_clusters_eleitores/
 ouro/estadual/contagem_colunas_clusters_eleitores_resultado/
 
 ouro/brasil/contagem_colunas_perfil_eleitor/
+ouro/brasil/contagem_colunas_resultado_partido/
 ouro/brasil/contagem_colunas_perfil_partido/
+ouro/brasil/contagem_colunas_resultado_candidato/
 ouro/brasil/contagem_colunas_perfil_candidato/
 ouro/brasil/contagem_colunas_clusters_eleitores/
 ouro/brasil/contagem_colunas_clusters_eleitores_resultado/
@@ -300,7 +323,9 @@ ouro/brasil/contagem_colunas_clusters_eleitores_resultado/
 Como interpretar:
 
 - `contagem_colunas_perfil_eleitor`: quantas pessoas existem em cada perfil/dimensao do eleitorado;
+- `contagem_colunas_resultado_partido`: histogramas dos resultados por partido, incluindo partido/entidade, cargo, turno, vencedor/nao vencedor, faixa de rank e faixa de share de votos;
 - `contagem_colunas_perfil_partido`: dentro de cada partido, qual perfil de eleitor aparece associado aos votos daquele partido;
+- `contagem_colunas_resultado_candidato`: histogramas dos resultados por candidato, incluindo candidato/entidade, cargo, turno, vencedor/nao vencedor, faixa de rank e faixa de share de votos;
 - `contagem_colunas_perfil_candidato`: dentro de cada candidato, qual perfil aparece associado aos votos daquele candidato;
 - `contagem_colunas_clusters_eleitores`: histograma dos campos discretos dentro dos clusters de eleitores;
 - `contagem_colunas_clusters_eleitores_resultado`: histograma dos clusters que combinam perfil de eleitor e resultado/partido.

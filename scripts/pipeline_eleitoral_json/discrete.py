@@ -212,6 +212,8 @@ def role_from_column(col: Any, role: str = "") -> str:
         return "regiao"
     if "GENERO" in c or c in {"SEXO", "DS_SEXO", "CD_GENERO"}:
         return "perfil_genero"
+    if "INSTRU" in c or "ESCOLAR" in c or "GRAU" in c:
+        return "perfil_instrucao"
     if "FAIXA_ETARIA" in c or "IDADE" in c:
         return "perfil_faixa_etaria"
     if "TURNO" in c:
@@ -222,8 +224,6 @@ def role_from_column(col: Any, role: str = "") -> str:
         return "partido"
     if "CANDIDATO" in c or "URNA" in c or "VOTAVEL" in c:
         return "candidato"
-    if "INSTRU" in c or "ESCOLAR" in c or "GRAU" in c:
-        return "perfil_instrucao"
     if "ESTADO_CIVIL" in c:
         return "perfil_estado_civil"
     if "RACA" in c or "RAÇA" in c or "COR" in c:

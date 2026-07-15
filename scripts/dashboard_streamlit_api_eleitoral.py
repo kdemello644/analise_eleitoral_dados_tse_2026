@@ -236,7 +236,11 @@ def profile_dimension_charts(df: pd.DataFrame) -> None:
 
 
 def histogram_dimension_cards(df: pd.DataFrame, title: str, value_col: str = "qtd_pessoas") -> None:
-    if df.empty or "dimensao_perfil" not in df.columns or "valor_perfil" not in df.columns:
+    if df.empty:
+        return
+    dim_col = "dimensao_perfil" if "dimensao_perfil" in df.columns else "dimensao_resultado" if "dimensao_resultado" in df.columns else ""
+    val_col = "valor_perfil" if "valor_perfil" in df.columns else "valor_resultado" if "valor_resultado" in df.columns else ""
+    if not dim_col or not val_col:
         return
     work = df.copy()
     if value_col not in work.columns:
@@ -244,25 +248,25 @@ def histogram_dimension_cards(df: pd.DataFrame, title: str, value_col: str = "qt
     if not value_col:
         return
     work[value_col] = pd.to_numeric(work[value_col], errors="coerce").fillna(0)
-    work = work[(work[value_col] > 0) & (work["valor_perfil"].astype(str).str.strip() != "")]
+    work = work[(work[value_col] > 0) & (work[val_col].astype(str).str.strip() != "")]
     if work.empty:
         return
     st.markdown(f"### {title}")
-    wanted = ["perfil_combinado", "faixa_etaria", "sexo_genero", "escolaridade", "estado_civil", "raca_cor"]
-    dims = [d for d in wanted if d in set(work["dimensao_perfil"].astype(str))]
+    wanted = ["perfil_combinado", "faixa_etaria", "sexo_genero", "escolaridade", "estado_civil", "raca_cor", "entidade", "cargo", "turno", "resultado_eleitoral", "resultado_grupo", "faixa_rank", "faixa_share_votos"]
+    dims = [d for d in wanted if d in set(work[dim_col].astype(str))]
     cols = st.columns(2)
     for idx, dim in enumerate(dims[:6]):
-        sub = work[work["dimensao_perfil"].astype(str) == dim].copy()
+        sub = work[work[dim_col].astype(str) == dim].copy()
         if "share_histograma" in sub.columns:
             sub["share_histograma"] = pd.to_numeric(sub["share_histograma"], errors="coerce").fillna(0)
-        sub = sub.groupby("valor_perfil", as_index=False)[value_col].sum().sort_values(value_col, ascending=False).head(18)
+        sub = sub.groupby(val_col, as_index=False)[value_col].sum().sort_values(value_col, ascending=False).head(18)
         if sub.empty:
             continue
         if dim != "perfil_combinado" and len(sub) <= 10:
-            fig = px.pie(sub, names="valor_perfil", values=value_col, hole=0.42, title=display_label(dim))
+            fig = px.pie(sub, names=val_col, values=value_col, hole=0.42, title=display_label(dim))
             fig.update_traces(textinfo="percent+label")
         else:
-            fig = px.bar(sub.sort_values(value_col), x=value_col, y="valor_perfil", orientation="h", color="valor_perfil", title=display_label(dim))
+            fig = px.bar(sub.sort_values(value_col), x=value_col, y=val_col, orientation="h", color=val_col, title=display_label(dim))
         fig.update_layout(height=430, template="plotly_white", showlegend=False, margin=dict(l=8, r=8, t=48, b=18))
         with cols[idx % 2]:
             st.plotly_chart(fig, use_container_width=True)
@@ -450,6 +454,8 @@ def render_brasil_tabelas(payload: dict[str, Any]) -> None:
     perfil = pd.DataFrame(tabelas.get("perfil_eleitor") or [])
     resultado = pd.DataFrame(tabelas.get("resultado_partido") or [])
     hist_perfil = pd.DataFrame(tabelas.get("contagem_colunas_perfil_eleitor") or [])
+    hist_resultado_partido = pd.DataFrame(tabelas.get("contagem_colunas_resultado_partido") or [])
+    hist_resultado_candidato = pd.DataFrame(tabelas.get("contagem_colunas_resultado_candidato") or [])
     hist_partido = pd.DataFrame(tabelas.get("contagem_colunas_perfil_partido") or [])
     hist_candidato = pd.DataFrame(tabelas.get("contagem_colunas_perfil_candidato") or [])
     hist_cluster = pd.DataFrame(tabelas.get("contagem_colunas_clusters_eleitores") or [])
@@ -459,7 +465,7 @@ def render_brasil_tabelas(payload: dict[str, Any]) -> None:
             ("Resumo", len(resumo), "linhas de ouro/brasil/resumo"),
             ("Perfil eleitor", len(perfil), "linhas de ouro/brasil/perfil_eleitor"),
             ("Resultado partido", len(resultado), "linhas de ouro/brasil/resultado_partido"),
-            ("Histogramas", len(hist_perfil) + len(hist_partido) + len(hist_candidato), "contagens auxiliares sem nulos"),
+            ("Histogramas", len(hist_perfil) + len(hist_resultado_partido) + len(hist_resultado_candidato) + len(hist_partido) + len(hist_candidato), "contagens auxiliares sem nulos"),
         ]
     )
     if not hist_perfil.empty:
@@ -506,6 +512,10 @@ def render_brasil_tabelas(payload: dict[str, Any]) -> None:
             party_chart(perdedores.rename(columns={"share_votos": "share_pred_2026"}), "Brasil - partidos/candidaturas que nao lideraram")
         with st.expander("Dados usados nos graficos de resultado"):
             st.dataframe(resultado, use_container_width=True, height=260)
+    if not hist_resultado_partido.empty:
+        histogram_dimension_cards(hist_resultado_partido, "Histogramas dos resultados por partido", "qtd_votos")
+    if not hist_resultado_candidato.empty:
+        histogram_dimension_cards(hist_resultado_candidato, "Histogramas dos resultados por candidato", "qtd_votos")
     if not hist_partido.empty:
         histogram_dimension_cards(hist_partido, "Quem vota por partido", "qtd_votos")
     if not hist_candidato.empty:

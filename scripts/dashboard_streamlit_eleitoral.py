@@ -93,6 +93,26 @@ TABLE_CANDIDATES: dict[str, list[str]] = {
         "global/analise_eleitoral/parquet/resultado_eleitorado_correlacionado.parquet",
         "global/analise_eleitoral/resultado_eleitorado_correlacionado.csv",
     ],
+    "resultado_partido": [
+        "ouro/brasil/resultado_partido",
+        "ouro/estadual/resultado_partido",
+        "ouro/municipal/resultado_partido",
+    ],
+    "contagem_colunas_resultado_partido": [
+        "ouro/brasil/contagem_colunas_resultado_partido",
+        "ouro/estadual/contagem_colunas_resultado_partido",
+        "ouro/municipal/contagem_colunas_resultado_partido",
+    ],
+    "resultado_candidato": [
+        "ouro/brasil/resultado_candidato",
+        "ouro/estadual/resultado_candidato",
+        "ouro/municipal/resultado_candidato",
+    ],
+    "contagem_colunas_resultado_candidato": [
+        "ouro/brasil/contagem_colunas_resultado_candidato",
+        "ouro/estadual/contagem_colunas_resultado_candidato",
+        "ouro/municipal/contagem_colunas_resultado_candidato",
+    ],
     "comparativo_perfil": [
         "ouro/top10_perfis_federacao_estado_municipio",
         "ouro/top10_perfis_federacao_estado_municipio.parquet",

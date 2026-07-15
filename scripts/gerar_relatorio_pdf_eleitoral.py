@@ -91,7 +91,9 @@ TABLE_CANDIDATES: dict[str, list[str]] = {
     "perfil_candidato": ["ouro/brasil/perfil_candidato", "ouro/estadual/perfil_candidato", "ouro/municipal/perfil_candidato", "ouro/perfil_eleitor_por_candidato", "ouro/perfil_eleitor_por_candidato.parquet"],
     "contagem_colunas_perfil_candidato": ["ouro/brasil/contagem_colunas_perfil_candidato", "ouro/estadual/contagem_colunas_perfil_candidato", "ouro/municipal/contagem_colunas_perfil_candidato"],
     "resultado_partido": ["ouro/brasil/resultado_partido", "ouro/estadual/resultado_partido", "ouro/municipal/resultado_partido"],
+    "contagem_colunas_resultado_partido": ["ouro/brasil/contagem_colunas_resultado_partido", "ouro/estadual/contagem_colunas_resultado_partido", "ouro/municipal/contagem_colunas_resultado_partido"],
     "resultado_candidato": ["ouro/brasil/resultado_candidato", "ouro/estadual/resultado_candidato", "ouro/municipal/resultado_candidato"],
+    "contagem_colunas_resultado_candidato": ["ouro/brasil/contagem_colunas_resultado_candidato", "ouro/estadual/contagem_colunas_resultado_candidato", "ouro/municipal/contagem_colunas_resultado_candidato"],
     "top10_perfis": ["ouro/top10_perfis_federacao_estado_municipio", "ouro/brasil/perfil_eleitor", "ouro/estadual/perfil_eleitor", "ouro/municipal/perfil_eleitor", "ouro/top10_perfis_federacao_estado_municipio.parquet"],
     "vencedor_secao": ["ouro/resultados_vencedores_secao", "ouro/resultados_vencedores_secao.parquet"],
     "resultado_eleitorado": ["ouro/resultado_eleitorado_por_secao", "ouro/resultado_eleitorado_por_secao.parquet"],
@@ -797,7 +799,11 @@ def read_ouro_level(run: Path, level: str, name: str, limit: int = 500, uf: str 
 
 
 def add_histogram_table_section(pdf: PdfReport, title: str, df: pd.DataFrame, top_n: int, value_col: str = "qtd_pessoas") -> None:
-    if df is None or df.empty or "dimensao_perfil" not in df.columns or "valor_perfil" not in df.columns:
+    if df is None or df.empty:
+        return
+    dim_col = "dimensao_perfil" if "dimensao_perfil" in df.columns else "dimensao_resultado" if "dimensao_resultado" in df.columns else ""
+    val_col = "valor_perfil" if "valor_perfil" in df.columns else "valor_resultado" if "valor_resultado" in df.columns else ""
+    if not dim_col or not val_col:
         return
     if value_col not in df.columns:
         value_col = "qtd_votos" if "qtd_votos" in df.columns else ""
@@ -805,17 +811,17 @@ def add_histogram_table_section(pdf: PdfReport, title: str, df: pd.DataFrame, to
         return
     work = df.copy()
     work[value_col] = pd.to_numeric(work[value_col], errors="coerce").fillna(0)
-    work = work[(work[value_col] > 0) & (work["valor_perfil"].astype(str).str.strip() != "")]
+    work = work[(work[value_col] > 0) & (work[val_col].astype(str).str.strip() != "")]
     if work.empty:
         return
     pdf.new_page(title)
-    for dim in ["perfil_combinado", "faixa_etaria", "sexo_genero", "escolaridade", "estado_civil", "raca_cor"]:
-        sub = work[work["dimensao_perfil"].astype(str) == dim].copy()
+    for dim in ["perfil_combinado", "faixa_etaria", "sexo_genero", "escolaridade", "estado_civil", "raca_cor", "entidade", "cargo", "turno", "resultado_eleitoral", "resultado_grupo", "faixa_rank", "faixa_share_votos"]:
+        sub = work[work[dim_col].astype(str) == dim].copy()
         if sub.empty:
             continue
-        sub = sub.groupby("valor_perfil", as_index=False)[value_col].sum()
+        sub = sub.groupby(val_col, as_index=False)[value_col].sum()
         sub = sort_by_numeric(sub, [value_col], ascending=False).head(top_n)
-        rows = [(str(row.get("valor_perfil", "")), pd.to_numeric(row.get(value_col), errors="coerce"), fmt_int(row.get(value_col))) for _, row in sub.iterrows()]
+        rows = [(str(row.get(val_col, "")), pd.to_numeric(row.get(value_col), errors="coerce"), fmt_int(row.get(value_col))) for _, row in sub.iterrows()]
         if not rows:
             continue
         pdf.hbar(f"{title} - {dim}", rows, max_rows=min(top_n, 14))
@@ -980,6 +986,7 @@ def add_polars_brasil_pages(pdf: PdfReport, store: Any, args: argparse.Namespace
     perfis_preview = pd.DataFrame()
     hist_perfis = pd.DataFrame()
     hist_partidos = pd.DataFrame()
+    hist_resultado_partidos = pd.DataFrame()
     if modalidade_allows(modalidade, "perfil"):
         if logger:
             logger.event("consulta_direta", "inicio", nivel="brasil", tabela="ouro/brasil/perfil_eleitor")
@@ -989,6 +996,7 @@ def add_polars_brasil_pages(pdf: PdfReport, store: Any, args: argparse.Namespace
             logger.event("consulta_direta", "fim", nivel="brasil", tabela="ouro/brasil/perfil_eleitor", linhas=len(perfis_preview))
     if modalidade_allows(modalidade, "partido"):
         hist_partidos = read_ouro_brasil(run_path, "contagem_colunas_perfil_partido", limit=max(args.top_n * 20, 1000))
+        hist_resultado_partidos = read_ouro_brasil(run_path, "contagem_colunas_resultado_partido", limit=max(args.top_n * 20, 1000))
     party_label_col = choose_col(partidos_preview, ["partido", "sg_partido", "sigla_partido", "entidade", "partido_vencedor", "nm_partido", "nr_partido"])
     top_party = "-"
     if party_label_col and not partidos_preview.empty:
@@ -1024,9 +1032,12 @@ def add_polars_brasil_pages(pdf: PdfReport, store: Any, args: argparse.Namespace
     if modalidade_allows(modalidade, "partido"):
         pdf.paragraph("Fonte dos partidos: ouro/brasil/resultado_partido.", size=8)
         add_party_result_section(pdf, "Brasil por partido", partidos_preview, min(args.top_n, 12))
+        add_histogram_table_section(pdf, "Histogramas dos resultados por partido - Brasil", hist_resultado_partidos, min(args.top_n, 14), "qtd_votos")
         add_histogram_table_section(pdf, "Perfil do eleitor por partido - Brasil", hist_partidos, min(args.top_n, 14), "qtd_votos")
     if modalidade_allows(modalidade, "candidato"):
         pdf.table("Resultado por candidato - Brasil", polars_to_pandas(store.entity_results(entity="candidato", nivel="brasil", limit=args.top_n)), ["ano", "entidade", "votos", "share_votos", "rank_entidade"], limit=args.top_n)
+        hist_resultado_candidatos = read_ouro_brasil(run_path, "contagem_colunas_resultado_candidato", limit=max(args.top_n * 20, 1000))
+        add_histogram_table_section(pdf, "Histogramas dos resultados por candidato - Brasil", hist_resultado_candidatos, min(args.top_n, 14), "qtd_votos")
         pdf.table("Perfil por candidato - Brasil", polars_to_pandas(store.entity_profiles(entity="candidato", nivel="brasil", limit=args.top_n)), ["ano", "entidade", "perfil_combinado", "share_perfil_na_entidade"], limit=args.top_n)
     if modalidade_allows(modalidade, "cluster"):
         add_polars_cluster_section(pdf, "Clusters Brasil - eleitorado", store.cluster_personas(tipo="eleitores", nivel="brasil", limit=args.top_n), args.top_n)
@@ -1053,6 +1064,7 @@ def add_polars_state_pages(pdf: PdfReport, store: Any, args: argparse.Namespace,
     state_profiles = pd.DataFrame()
     state_hist_profiles = pd.DataFrame()
     state_hist_parties = pd.DataFrame()
+    state_hist_result_parties = pd.DataFrame()
     if modalidade_allows(modalidade, "partido"):
         if logger:
             logger.event("consulta_polars", "inicio", nivel="estado", uf=uf, tabela="ouro/estadual/resultado_partido")
@@ -1068,6 +1080,7 @@ def add_polars_state_pages(pdf: PdfReport, store: Any, args: argparse.Namespace,
             logger.event("consulta_polars", "fim", nivel="estado", uf=uf, tabela="ouro/estadual/perfil_eleitor", linhas=len(state_profiles))
     if modalidade_allows(modalidade, "partido"):
         state_hist_parties = read_ouro_level(Path(getattr(store, "run_path", getattr(args, "run", "."))).expanduser(), "estadual", "contagem_colunas_perfil_partido", limit=max(args.top_n * 20, 1000), uf=uf)
+        state_hist_result_parties = read_ouro_level(Path(getattr(store, "run_path", getattr(args, "run", "."))).expanduser(), "estadual", "contagem_colunas_resultado_partido", limit=max(args.top_n * 20, 1000), uf=uf)
     party_df = polars_to_pandas(state_parties) if hasattr(state_parties, "to_dicts") else state_parties
     party_label_col = choose_col(party_df, ["partido", "sg_partido", "sigla_partido", "entidade", "partido_vencedor", "nm_partido", "nr_partido"])
     top_party = "-"
@@ -1096,9 +1109,12 @@ def add_polars_state_pages(pdf: PdfReport, store: Any, args: argparse.Namespace,
     if modalidade_allows(modalidade, "partido"):
         pdf.paragraph(f"Fonte dos partidos em {uf}: ouro/estadual/resultado_partido.", size=8)
         add_party_result_section(pdf, f"{uf} por partido", party_df, min(args.top_n, 12))
+        add_histogram_table_section(pdf, f"Histogramas dos resultados por partido - {uf}", state_hist_result_parties, min(args.top_n, 14), "qtd_votos")
         add_histogram_table_section(pdf, f"Perfil do eleitor por partido - {uf}", state_hist_parties, min(args.top_n, 14), "qtd_votos")
     if modalidade_allows(modalidade, "candidato"):
         pdf.table(f"Resultado por candidato - {uf}", polars_to_pandas(store.entity_results(entity="candidato", nivel="estado", uf=uf, limit=args.top_n)), ["ano", "entidade", "votos", "share_votos", "rank_entidade"], limit=args.top_n)
+        state_hist_result_candidates = read_ouro_level(Path(getattr(store, "run_path", getattr(args, "run", "."))).expanduser(), "estadual", "contagem_colunas_resultado_candidato", limit=max(args.top_n * 20, 1000), uf=uf)
+        add_histogram_table_section(pdf, f"Histogramas dos resultados por candidato - {uf}", state_hist_result_candidates, min(args.top_n, 14), "qtd_votos")
         pdf.table(f"Perfil por candidato - {uf}", polars_to_pandas(store.entity_profiles(entity="candidato", nivel="estado", uf=uf, limit=args.top_n)), ["ano", "entidade", "perfil_combinado", "share_perfil_na_entidade"], limit=args.top_n)
     if modalidade_allows(modalidade, "cluster"):
         add_polars_cluster_section(pdf, f"Clusters {uf} - eleitorado", store.cluster_personas(tipo="eleitores", nivel="estado", uf=uf, limit=args.top_n), args.top_n)

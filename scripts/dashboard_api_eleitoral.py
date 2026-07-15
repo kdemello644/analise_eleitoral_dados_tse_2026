@@ -498,6 +498,8 @@ def make_app(run_path: Path, engine: str = "polars") -> FastAPI:
         perfil = read_ouro_brasil(state.run_path, "perfil_eleitor", limit=limit)
         resultado = read_ouro_brasil(state.run_path, "resultado_partido", limit=limit)
         hist_perfil = read_ouro_brasil(state.run_path, "contagem_colunas_perfil_eleitor", limit=limit)
+        hist_resultado_partido = read_ouro_brasil(state.run_path, "contagem_colunas_resultado_partido", limit=limit)
+        hist_resultado_candidato = read_ouro_brasil(state.run_path, "contagem_colunas_resultado_candidato", limit=limit)
         hist_partido = read_ouro_brasil(state.run_path, "contagem_colunas_perfil_partido", limit=limit)
         hist_candidato = read_ouro_brasil(state.run_path, "contagem_colunas_perfil_candidato", limit=limit)
         hist_clusters = read_ouro_brasil(state.run_path, "contagem_colunas_clusters_eleitores", limit=limit)
@@ -510,6 +512,8 @@ def make_app(run_path: Path, engine: str = "polars") -> FastAPI:
                 "perfil_eleitor": to_records(perfil, limit=limit),
                 "resultado_partido": to_records(resultado, limit=limit),
                 "contagem_colunas_perfil_eleitor": to_records(hist_perfil, limit=limit),
+                "contagem_colunas_resultado_partido": to_records(hist_resultado_partido, limit=limit),
+                "contagem_colunas_resultado_candidato": to_records(hist_resultado_candidato, limit=limit),
                 "contagem_colunas_perfil_partido": to_records(hist_partido, limit=limit),
                 "contagem_colunas_perfil_candidato": to_records(hist_candidato, limit=limit),
                 "contagem_colunas_clusters_eleitores": to_records(hist_clusters, limit=limit),
