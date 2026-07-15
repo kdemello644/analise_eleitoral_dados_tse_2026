@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 import plotly.express as px
 import requests
+from requests import ReadTimeout
 import streamlit as st
 
 
@@ -45,22 +46,34 @@ UF_CENTROIDS: dict[str, tuple[float, float]] = {
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--api", default="http://localhost:8055", help="URL base da API FastAPI.")
+    parser.add_argument("--timeout", type=int, default=30, help="Timeout das consultas API em segundos; o front limita em 30s.")
     args, _ = parser.parse_known_args(sys.argv[1:])
     return args
 
 
-def api_get(base_url: str, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+def api_get(base_url: str, path: str, params: dict[str, Any] | None = None, timeout: int = 30) -> dict[str, Any]:
     url = base_url.rstrip("/") + path
-    response = requests.get(url, params=params or {}, timeout=240)
+    response = requests.get(url, params=params or {}, timeout=timeout)
     response.raise_for_status()
     return response.json()
 
 
-def api_post(base_url: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+def api_post(base_url: str, path: str, payload: dict[str, Any], timeout: int = 30) -> dict[str, Any]:
     url = base_url.rstrip("/") + path
-    response = requests.post(url, json=payload, timeout=240)
+    response = requests.post(url, json=payload, timeout=timeout)
     response.raise_for_status()
     return response.json()
+
+
+def safe_api_get(base_url: str, path: str, params: dict[str, Any] | None = None, timeout: int = 30) -> dict[str, Any]:
+    try:
+        return api_get(base_url, path, params=params, timeout=timeout)
+    except ReadTimeout:
+        st.warning(f"Consulta demorou mais que {timeout}s: {path}. Tente reduzir Top N, escolher uma modalidade mais leve ou aguardar a camada ouro terminar.")
+        return {"status": "timeout", "dados": []}
+    except Exception as exc:
+        st.error(f"Erro consultando {path}: {exc}")
+        return {"status": "error", "erro": str(exc), "dados": []}
 
 
 def df_from_payload(payload: dict[str, Any], key: str = "dados") -> pd.DataFrame:
@@ -80,17 +93,216 @@ def format_value(value: Any) -> str:
     return str(value)
 
 
+def clean_profile_value(value: Any) -> str:
+    text = "" if value is None else str(value).strip()
+    if not text or text.lower() in {"nan", "none", "null", "<na>", "sem valor", "geral"}:
+        return ""
+    if "=" in text:
+        text = text.split("=", 1)[1].strip()
+    return text
+
+
+def display_label(col: str) -> str:
+    labels = {
+        "perfil_faixa_etaria": "faixa etaria",
+        "perfil_genero": "sexo",
+        "perfil_instrucao": "escolaridade",
+        "perfil_estado_civil": "estado civil",
+        "perfil_raca_cor": "raca/cor",
+        "share_perfil": "participacao",
+        "eleitorado": "base",
+        "pessoas_perfil_estimado": "pessoas",
+        "nm_municipio": "municipio",
+    }
+    return labels.get(str(col), str(col).replace("_", " "))
+
+
+def build_profile_label(row: dict[str, Any]) -> str:
+    parts = []
+    for label, col in [
+        ("Faixa etaria", "perfil_faixa_etaria"),
+        ("Sexo", "perfil_genero"),
+        ("Escolaridade", "perfil_instrucao"),
+        ("Estado civil", "perfil_estado_civil"),
+        ("Raca/cor", "perfil_raca_cor"),
+    ]:
+        value = clean_profile_value(row.get(col))
+        if value:
+            parts.append(f"{label}: {value}")
+    if parts:
+        return " | ".join(parts)
+    return str(row.get("perfil_combinado") or row.get("descricao") or row.get("valor_perfil") or "Perfil")
+
+
+def add_profile_people_estimate(perfil: pd.DataFrame, resumo: pd.DataFrame) -> pd.DataFrame:
+    if perfil.empty or "share_perfil" not in perfil.columns or resumo.empty:
+        return perfil
+    total_col = next((c for c in ["eleitorado", "eleitorado_total", "qtd_eleitores"] if c in resumo.columns), None)
+    if not total_col:
+        return perfil
+    total = pd.to_numeric(resumo[total_col], errors="coerce").dropna()
+    if total.empty:
+        return perfil
+    # Usa o maior total nacional disponivel como base de leitura; evita expor somas duplicadas vindas de agregacoes intermediarias.
+    base = float(total.max())
+    out = perfil.copy()
+    share = pd.to_numeric(out["share_perfil"], errors="coerce").fillna(0).clip(lower=0)
+    out["pessoas_perfil_estimado"] = share * base
+    return out
+
+
+def profile_weight_col(df: pd.DataFrame) -> str | None:
+    for col in ["histograma_qtd_pessoas", "qtd_eleitores_perfil", "pessoas_perfil_estimado", "eleitorado", "share_perfil"]:
+        if col in df.columns:
+            return col
+    return None
+
+
+def profile_total_histogram(df: pd.DataFrame, title: str = "Quantidade de pessoas por perfil") -> None:
+    if df.empty:
+        return
+    weight_col = profile_weight_col(df)
+    if not weight_col:
+        return
+    work = df.copy()
+    work["perfil_label"] = work.apply(lambda row: build_profile_label(row.to_dict()), axis=1)
+    work[weight_col] = pd.to_numeric(work[weight_col], errors="coerce").fillna(0)
+    work = work[(work["perfil_label"].astype(str).str.strip() != "") & (work[weight_col] > 0)]
+    if work.empty:
+        return
+    if "ano" in work.columns:
+        group_cols = ["perfil_label"]
+        color_col = "perfil_instrucao" if "perfil_instrucao" in work.columns else ("perfil_genero" if "perfil_genero" in work.columns else None)
+        if color_col:
+            group_cols.append(color_col)
+        work = work.groupby(group_cols, as_index=False)[weight_col].sum()
+    work = work.sort_values(weight_col, ascending=False).head(25)
+    color = "perfil_instrucao" if "perfil_instrucao" in work.columns else ("perfil_genero" if "perfil_genero" in work.columns else None)
+    fig = px.bar(
+        work.sort_values(weight_col),
+        x=weight_col,
+        y="perfil_label",
+        orientation="h",
+        color=color,
+        title=title,
+        text=weight_col,
+    )
+    fig.update_traces(texttemplate="%{text:,.0f}", hovertemplate="%{y}<br>%{x:,.0f} pessoas<extra></extra>")
+    fig.update_layout(
+        height=max(540, min(920, 34 * len(work) + 150)),
+        template="plotly_white",
+        margin=dict(l=8, r=8, t=58, b=24),
+        yaxis_title="Perfil",
+        xaxis_title="Quantidade de pessoas",
+        legend_title_text=display_label(color) if color else "",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def profile_dimension_charts(df: pd.DataFrame) -> None:
+    if df.empty:
+        return
+    weight_col = profile_weight_col(df)
+    if not weight_col:
+        return
+    dims = [
+        ("perfil_faixa_etaria", "Faixa etaria"),
+        ("perfil_genero", "Sexo"),
+        ("perfil_instrucao", "Escolaridade"),
+        ("perfil_estado_civil", "Estado civil"),
+        ("perfil_raca_cor", "Raca/cor"),
+    ]
+    available = [(col, label) for col, label in dims if col in df.columns]
+    if not available:
+        return
+    st.markdown("### Distribuicao por dimensao do perfil")
+    chart_cols = st.columns(2)
+    for idx, (col, label) in enumerate(available):
+        work = df[[col, weight_col]].copy()
+        work[col] = work[col].map(clean_profile_value)
+        work[weight_col] = pd.to_numeric(work[weight_col], errors="coerce").fillna(0)
+        work = work[(work[col] != "") & (work[weight_col] > 0)]
+        if work.empty:
+            continue
+        agg = work.groupby(col, as_index=False)[weight_col].sum().sort_values(weight_col, ascending=False).head(18)
+        if len(agg) <= 8:
+            fig = px.pie(agg, names=col, values=weight_col, hole=0.42, title=label)
+            fig.update_traces(textposition="inside", textinfo="percent+label")
+        else:
+            fig = px.bar(agg.sort_values(weight_col), x=weight_col, y=col, orientation="h", color=col, title=label)
+        fig.update_layout(height=420, template="plotly_white", showlegend=False, margin=dict(l=8, r=8, t=48, b=20))
+        with chart_cols[idx % 2]:
+            st.plotly_chart(fig, use_container_width=True)
+
+
+def histogram_dimension_cards(df: pd.DataFrame, title: str, value_col: str = "qtd_pessoas") -> None:
+    if df.empty or "dimensao_perfil" not in df.columns or "valor_perfil" not in df.columns:
+        return
+    work = df.copy()
+    if value_col not in work.columns:
+        value_col = "qtd_votos" if "qtd_votos" in work.columns else ""
+    if not value_col:
+        return
+    work[value_col] = pd.to_numeric(work[value_col], errors="coerce").fillna(0)
+    work = work[(work[value_col] > 0) & (work["valor_perfil"].astype(str).str.strip() != "")]
+    if work.empty:
+        return
+    st.markdown(f"### {title}")
+    wanted = ["perfil_combinado", "faixa_etaria", "sexo_genero", "escolaridade", "estado_civil", "raca_cor"]
+    dims = [d for d in wanted if d in set(work["dimensao_perfil"].astype(str))]
+    cols = st.columns(2)
+    for idx, dim in enumerate(dims[:6]):
+        sub = work[work["dimensao_perfil"].astype(str) == dim].copy()
+        if "share_histograma" in sub.columns:
+            sub["share_histograma"] = pd.to_numeric(sub["share_histograma"], errors="coerce").fillna(0)
+        sub = sub.groupby("valor_perfil", as_index=False)[value_col].sum().sort_values(value_col, ascending=False).head(18)
+        if sub.empty:
+            continue
+        if dim != "perfil_combinado" and len(sub) <= 10:
+            fig = px.pie(sub, names="valor_perfil", values=value_col, hole=0.42, title=display_label(dim))
+            fig.update_traces(textinfo="percent+label")
+        else:
+            fig = px.bar(sub.sort_values(value_col), x=value_col, y="valor_perfil", orientation="h", color="valor_perfil", title=display_label(dim))
+        fig.update_layout(height=430, template="plotly_white", showlegend=False, margin=dict(l=8, r=8, t=48, b=18))
+        with cols[idx % 2]:
+            st.plotly_chart(fig, use_container_width=True)
+
+
+def split_winner_status(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if df.empty:
+        return df, df
+    work = df.copy()
+    if "partido" not in work.columns:
+        for col in ["entidade", "sg_partido", "partido_vencedor", "nm_partido", "nr_partido"]:
+            if col in work.columns:
+                work["partido"] = work[col].astype(str)
+                break
+    if "resultado_eleitoral" in work.columns:
+        status = work["resultado_eleitoral"].astype(str).str.lower()
+        winners = work[status.str.contains("vencedor|eleito|ganhou", regex=True, na=False)].copy()
+        losers = work[~work.index.isin(winners.index)].copy()
+        return winners, losers
+    if "rank_entidade" in work.columns:
+        rank = pd.to_numeric(work["rank_entidade"], errors="coerce")
+        return work[rank == 1].copy(), work[rank != 1].copy()
+    return work.head(0).copy(), work
+
+
 def inject_style() -> None:
     st.markdown(
         """
         <style>
-        .block-container {padding-top: 1.25rem; max-width: 1480px;}
+        .block-container {padding-top: 1.15rem; max-width: 1500px;}
+        section[data-testid="stSidebar"] {width: 230px !important;}
+        section[data-testid="stSidebar"] * {font-size: .92rem;}
         .hero-box {
-            padding: 1.35rem 1.5rem;
+            padding: 1.3rem 1.45rem;
             border-radius: 10px;
-            background: linear-gradient(120deg, #10243d 0%, #116c69 100%);
+            background:
+                linear-gradient(120deg, rgba(15, 23, 42, .96) 0%, rgba(17, 94, 89, .96) 62%, rgba(30, 64, 175, .92) 100%);
             color: #fff;
             margin-bottom: 1rem;
+            box-shadow: 0 18px 42px rgba(8, 20, 45, .22);
         }
         .hero-kicker {font-size: .82rem; letter-spacing: .06em; text-transform: uppercase; color: #9df3df; font-weight: 700;}
         .hero-title {font-size: 2.1rem; line-height: 1.05; font-weight: 800; margin: .35rem 0 .45rem;}
@@ -111,6 +323,48 @@ def inject_style() -> None:
         .metric-label {font-size: .78rem; color: #56657a; font-weight: 700; text-transform: uppercase;}
         .metric-value {font-size: 1.75rem; font-weight: 800; color: #0b1830; margin-top: .15rem;}
         .metric-help {font-size: .82rem; color: #68758a; margin-top: .15rem;}
+        .card-grid .metric-card:nth-child(1) {border-top: 4px solid #2563eb;}
+        .card-grid .metric-card:nth-child(2) {border-top: 4px solid #059669;}
+        .card-grid .metric-card:nth-child(3) {border-top: 4px solid #dc2626;}
+        .card-grid .metric-card:nth-child(4) {border-top: 4px solid #7c3aed;}
+        .control-panel {
+            border: 1px solid #d7e0ee;
+            border-radius: 8px;
+            background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+            padding: 1rem;
+            margin: .85rem 0 1rem;
+            box-shadow: 0 10px 28px rgba(21, 35, 59, .07);
+        }
+        .control-title {font-size: 1rem; font-weight: 850; color: #10243d; margin-bottom: .15rem;}
+        .control-subtitle {font-size: .86rem; color: #64748b; margin-bottom: .6rem;}
+        .command-box {
+            background: #0b1220;
+            color: #dbeafe;
+            border-radius: 8px;
+            padding: .75rem;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: .75rem;
+            white-space: pre-wrap;
+            border: 1px solid #1e293b;
+        }
+        .quick-actions {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+            gap: .7rem;
+            margin: .75rem 0 1rem;
+        }
+        .action-card {
+            border: 1px solid #d7e0ee;
+            border-radius: 8px;
+            background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
+            padding: .85rem 1rem;
+            box-shadow: 0 8px 22px rgba(21, 35, 59, .05);
+        }
+        .quick-actions .action-card:nth-child(1) {border-left: 5px solid #2563eb;}
+        .quick-actions .action-card:nth-child(2) {border-left: 5px solid #059669;}
+        .quick-actions .action-card:nth-child(3) {border-left: 5px solid #d97706;}
+        .action-title {font-size: .95rem; font-weight: 800; color: #0b1830;}
+        .action-subtitle {font-size: .82rem; color: #5f6f86; margin-top: .15rem;}
         .profile-card {
             border: 1px solid #d7e0ee;
             border-radius: 8px;
@@ -155,6 +409,114 @@ def inject_style() -> None:
     )
 
 
+@st.cache_data(ttl=120, show_spinner=False)
+def cached_api_get(base_url: str, path: str, params_tuple: tuple[tuple[str, Any], ...], timeout: int) -> dict[str, Any]:
+    return api_get(base_url, path, params=dict(params_tuple), timeout=timeout)
+
+
+def render_quick_actions() -> None:
+    st.markdown(
+        """
+        <div class="quick-actions">
+          <div class="action-card"><div class="action-title">1. Ver Brasil</div><div class="action-subtitle">Resumo nacional carregado direto da ouro.</div></div>
+          <div class="action-card"><div class="action-title">2. Escolher estado</div><div class="action-subtitle">Mapa e ranking por UF quando precisar.</div></div>
+          <div class="action-card"><div class="action-title">3. Gerar PDF</div><div class="action-subtitle">Brasil primeiro, depois estados e municipios.</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_brasil_payload(payload: dict[str, Any]) -> None:
+    partidos_payload = {"dados": payload.get("partidos") or [], "fonte": payload.get("fonte_partidos", "-")}
+    perfis_payload = {"dados": payload.get("perfis") or []}
+    metricas_payload = {"dados": payload.get("metricas") or []}
+    render_stat_grid(
+        [
+            ("Fonte partidos", partidos_payload.get("fonte", "-"), "ouro Brasil processado"),
+            ("Perfis", len(perfis_payload.get("dados") or []), "cards de eleitor medio"),
+            ("Partidos", len(partidos_payload.get("dados") or []), "linhas retornadas"),
+            ("Metricas", len(metricas_payload.get("dados") or []), "anos retornados"),
+        ]
+    )
+    party_chart(df_from_payload(partidos_payload), "Brasil por partido")
+    st.markdown("### Eleitor medio no Brasil")
+    profile_cards(df_from_payload(perfis_payload))
+
+
+def render_brasil_tabelas(payload: dict[str, Any]) -> None:
+    tabelas = payload.get("tabelas") or {}
+    resumo = pd.DataFrame(tabelas.get("resumo") or [])
+    perfil = pd.DataFrame(tabelas.get("perfil_eleitor") or [])
+    resultado = pd.DataFrame(tabelas.get("resultado_partido") or [])
+    hist_perfil = pd.DataFrame(tabelas.get("contagem_colunas_perfil_eleitor") or [])
+    hist_partido = pd.DataFrame(tabelas.get("contagem_colunas_perfil_partido") or [])
+    hist_candidato = pd.DataFrame(tabelas.get("contagem_colunas_perfil_candidato") or [])
+    hist_cluster = pd.DataFrame(tabelas.get("contagem_colunas_clusters_eleitores") or [])
+    perfil = add_profile_people_estimate(perfil, resumo)
+    render_stat_grid(
+        [
+            ("Resumo", len(resumo), "linhas de ouro/brasil/resumo"),
+            ("Perfil eleitor", len(perfil), "linhas de ouro/brasil/perfil_eleitor"),
+            ("Resultado partido", len(resultado), "linhas de ouro/brasil/resultado_partido"),
+            ("Histogramas", len(hist_perfil) + len(hist_partido) + len(hist_candidato), "contagens auxiliares sem nulos"),
+        ]
+    )
+    if not hist_perfil.empty:
+        histogram_dimension_cards(hist_perfil, "Histogramas do eleitor no Brasil", "qtd_pessoas")
+    if not perfil.empty:
+        st.markdown("### Quantidade de pessoas por perfil")
+        if hist_perfil.empty:
+            profile_total_histogram(perfil, "Brasil - quantas pessoas existem em cada perfil")
+        st.markdown("### Perfil predominante do eleitor")
+        profile_cards(perfil, max_cards=8)
+        if hist_perfil.empty:
+            profile_dimension_charts(perfil)
+        cols = [
+            c
+            for c in [
+                "ano",
+                "perfil_faixa_etaria",
+                "perfil_genero",
+                "perfil_instrucao",
+                "perfil_estado_civil",
+                "perfil_raca_cor",
+                "share_perfil",
+                "qtd_eleitores_perfil",
+                "histograma_qtd_pessoas",
+                "pessoas_perfil_estimado",
+            ]
+            if c in perfil.columns
+        ]
+        with st.expander("Dados usados nos graficos de perfil"):
+            st.dataframe(perfil[cols] if cols else perfil, use_container_width=True, height=260)
+    if not resultado.empty:
+        vencedores, perdedores = split_winner_status(resultado)
+        st.markdown("### Quem ganhou")
+        if vencedores.empty:
+            st.warning("A camada ouro ainda nao marcou vencedores neste recorte. Reprocesse estados+Brasil para gerar resultado_eleitoral.")
+        else:
+            party_chart(vencedores.rename(columns={"share_votos": "share_pred_2026"}), "Brasil - vencedores por partido")
+            interp_col = "interpretacao_resultado" if "interpretacao_resultado" in vencedores.columns else ""
+            if interp_col:
+                for text in vencedores[interp_col].dropna().astype(str).head(3).tolist():
+                    st.info(text)
+        if not perdedores.empty:
+            st.markdown("### Quem nao ganhou")
+            party_chart(perdedores.rename(columns={"share_votos": "share_pred_2026"}), "Brasil - partidos/candidaturas que nao lideraram")
+        with st.expander("Dados usados nos graficos de resultado"):
+            st.dataframe(resultado, use_container_width=True, height=260)
+    if not hist_partido.empty:
+        histogram_dimension_cards(hist_partido, "Quem vota por partido", "qtd_votos")
+    if not hist_candidato.empty:
+        histogram_dimension_cards(hist_candidato, "Perfil do voto por candidato", "qtd_votos")
+    if not hist_cluster.empty:
+        histogram_dimension_cards(hist_cluster, "Histogramas dos clusters", "qtd_pessoas")
+    if not resumo.empty:
+        with st.expander("Resumo bruto Brasil"):
+            st.dataframe(resumo, use_container_width=True, height=220)
+
+
 def render_stat_grid(cards: list[tuple[str, Any, str]]) -> None:
     html_cards = []
     for label, value, help_text in cards:
@@ -169,10 +531,18 @@ def render_stat_grid(cards: list[tuple[str, Any, str]]) -> None:
 
 
 def party_chart(df: pd.DataFrame, title: str) -> None:
-    if df.empty or "partido" not in df.columns:
+    if df.empty:
         st.info("Sem dados de partido para graficar nesta consulta.")
         return
     work = df.copy()
+    if "partido" not in work.columns:
+        for col in ["entidade", "sg_partido", "partido_vencedor", "nm_partido", "nr_partido"]:
+            if col in work.columns:
+                work["partido"] = work[col].astype(str)
+                break
+    if "partido" not in work.columns:
+        st.info("Sem coluna de partido/entidade para graficar nesta consulta.")
+        return
     share_col = "share_pred_2026" if "share_pred_2026" in work.columns else None
     if share_col:
         work[share_col] = pd.to_numeric(work[share_col], errors="coerce").fillna(0)
@@ -248,11 +618,11 @@ def profile_cards(df: pd.DataFrame, max_cards: int = 10) -> None:
     rows = df.head(max_cards).to_dict(orient="records")
     columns = st.columns(2)
     for idx, row in enumerate(rows):
-        profile = row.get("perfil_combinado") or row.get("descricao") or row.get("valor_perfil") or "Perfil"
+        profile = build_profile_label(row)
         tags = []
-        for col in ["ano", "uf", "nm_municipio", "share_perfil", "eleitorado"]:
+        for col in ["ano", "uf", "nm_municipio", "share_perfil", "pessoas_perfil_estimado", "eleitorado"]:
             if col in row and pd.notna(row[col]) and row[col] != "":
-                tags.append((col, row[col]))
+                tags.append((display_label(col), row[col]))
         with columns[idx % 2]:
             pills = "".join(f"<span class='pill'>{escape(str(k))}: {escape(format_value(v))}</span>" for k, v in tags[:5])
             st.markdown(
@@ -355,6 +725,7 @@ def log_panel(payload: dict[str, Any]) -> None:
 
 def main() -> None:
     args = parse_args()
+    api_timeout = min(30, max(5, int(args.timeout or 30)))
     st.set_page_config(page_title="Dashboard Eleitoral API", layout="wide")
     inject_style()
 
@@ -371,53 +742,57 @@ def main() -> None:
 
     with st.sidebar:
         st.header("API")
-        api_url = st.text_input("URL da API", value=args.api)
+        api_url = st.text_input("URL", value=args.api, label_visibility="collapsed")
         try:
-            health = api_get(api_url, "/api/health")
-            progresso = api_get(api_url, "/api/progresso")
+            health = api_get(api_url, "/api/health", timeout=api_timeout)
+            progresso = api_get(api_url, "/api/progresso", timeout=api_timeout)
             api_online = True
         except Exception as exc:
             health = {"erro": str(exc)}
             progresso = {}
             api_online = False
         if api_online:
-            st.success("API online")
+            st.success("Conectada")
         else:
-            st.error(f"API indisponivel: {health.get('erro')}")
-        if st.button("Testar API"):
-            st.json(health)
-
-        st.header("Filtros")
-        modalidade_labels = {
-            "completa": "Completa",
-            "estados_brasil": "Estados + Brasil",
-            "eleitor": "Somente eleitor",
-            "candidato": "Somente candidato",
-            "eleitor_partido": "Eleitor + partido",
-            "eleitor_candidato_partido": "Eleitor + candidato + partido",
-        }
-        modalidade = st.selectbox(
-            "Modalidade",
-            list(modalidade_labels.keys()),
-            format_func=lambda key: modalidade_labels.get(key, key),
-            index=0,
+            st.error("Desconectada")
+            st.caption(str(health.get("erro", ""))[:180])
+        st.caption("Comando para iniciar API")
+        st.markdown(
+            "<div class='command-box'>python3 scripts/dashboard_api_eleitoral.py --run dados/banco_eleitoral --host 0.0.0.0 --port 8055 --engine polars</div>",
+            unsafe_allow_html=True,
         )
-        resumo = progresso.get("ouro_resultados") or {}
-        uf_options = sorted(set((resumo.get("ufs_concluidas") or []) + (resumo.get("ufs_pendentes") or [])))
-        uf = st.selectbox("Estado", [""] + uf_options, index=0)
-        municipios = []
-        if uf:
-            try:
-                municipios = api_get(api_url, "/api/municipios", {"uf": uf, "modalidade": modalidade}).get("municipios", [])
-            except Exception as exc:
-                st.warning(f"Nao consegui listar municipios: {exc}")
-        municipio_labels = [""] + [m["label"] for m in municipios]
-        municipio_values = {m["label"]: m["value"] for m in municipios}
-        municipio_label = st.selectbox("Municipio", municipio_labels, index=0)
+
+    modalidade_labels = {
+        "completa": "Completa",
+        "estados_brasil": "Estados + Brasil",
+        "eleitor": "Somente eleitor",
+        "candidato": "Somente candidato",
+        "eleitor_partido": "Eleitor + partido",
+        "eleitor_candidato_partido": "Eleitor + candidato + partido",
+    }
+    resumo = progresso.get("ouro_resultados") or {}
+    uf_options = sorted(set((resumo.get("ufs_concluidas") or []) + (resumo.get("ufs_pendentes") or [])))
+    st.markdown(
+        "<div class='control-panel'><div class='control-title'>Central de consulta</div>"
+        "<div class='control-subtitle'>Escolha o recorte e o painel carrega direto dos Parquets processados. As consultas do front param em 30 segundos.</div></div>",
+        unsafe_allow_html=True,
+    )
+    ctrl1, ctrl2, ctrl3, ctrl4 = st.columns([1.4, 1, .85, .75])
+    modalidade = ctrl1.selectbox("Analise", list(modalidade_labels.keys()), format_func=lambda key: modalidade_labels.get(key, key), index=1)
+    uf = ctrl2.selectbox("Estado", [""] + uf_options, index=0, format_func=lambda value: "Brasil" if value == "" else value)
+    ano = ctrl3.selectbox("Ano", ["", "2014", "2018", "2022", "2024"], index=0, format_func=lambda value: "Todos" if value == "" else value)
+    limit = ctrl4.slider("Itens", 5, 50, 20)
+    cenario = "base"
+    municipios = []
+    if uf:
+        municipios = safe_api_get(api_url, "/api/municipios", {"uf": uf, "modalidade": modalidade}, timeout=api_timeout).get("municipios", [])
+    municipio_labels = [""] + [m["label"] for m in municipios]
+    municipio_values = {m["label"]: m["value"] for m in municipios}
+    municipio_label = ""
+    municipio = ""
+    if municipios:
+        municipio_label = st.selectbox("Municipio", municipio_labels, index=0, format_func=lambda value: "Escolha um municipio" if value == "" else value)
         municipio = municipio_values.get(municipio_label, "")
-        ano = st.selectbox("Ano", ["", "2014", "2018", "2022", "2024"], index=0)
-        cenario = st.text_input("Cenario", value="base")
-        limit = st.slider("Top N", 5, 100, 20)
 
     resumo = progresso.get("ouro_resultados") or {}
     render_stat_grid(
@@ -429,25 +804,27 @@ def main() -> None:
         ]
     )
 
+    render_quick_actions()
+
     tabs = st.tabs(["Brasil", "Estados", "Municipios", "Rodar analise", "Clusters/Perfis", "Progresso e logs", "Consulta", "PDF"])
 
     with tabs[0]:
         st.subheader("Brasil")
-        if st.button("Buscar Brasil", key="buscar_brasil"):
-            with st.spinner("Consultando Brasil na API..."):
-                payload = api_get(api_url, "/api/brasil", {"ano": ano, "cenario": cenario, "modalidade": modalidade, "limit": limit})
-            render_stat_grid(
-                [
-                    ("Fonte partidos", payload.get("fonte_partidos", "-"), "simulacao ou historico"),
-                    ("Perfis", len(payload.get("perfis") or []), "cards de eleitor medio"),
-                    ("Partidos", len(payload.get("partidos") or []), "linhas retornadas"),
-                ]
-            )
-            party_chart(df_from_payload(payload, "partidos"), "Brasil por partido")
-            st.markdown("### Eleitor medio no Brasil")
-            profile_cards(df_from_payload(payload, "perfis"))
+        status_box = st.empty()
+        if api_online:
+            status_box.info("Carregando as 3 tabelas Brasil da camada ouro...")
+            params = tuple(sorted({"limit": min(limit, 50)}.items()))
+            try:
+                payload = cached_api_get(api_url, "/api/brasil/tabelas", params, api_timeout)
+                status_box.success("Brasil carregado direto de ouro/brasil.")
+                render_brasil_tabelas(payload)
+            except Exception as exc:
+                status_box.warning(f"Nao consegui carregar automaticamente: {exc}")
+                if st.button("Tentar carregar Brasil novamente", key="buscar_brasil"):
+                    payload = safe_api_get(api_url, "/api/brasil/tabelas", {"limit": min(limit, 50)}, timeout=api_timeout)
+                    render_brasil_tabelas(payload)
         else:
-            st.info("Clique em Buscar Brasil para carregar os graficos nacionais.")
+            st.info("Inicie a API para carregar a visao nacional.")
 
     with tabs[1]:
         st.subheader("Estados")
@@ -729,6 +1106,7 @@ def main() -> None:
         municipios_por_uf = pdf_cols[2].number_input("Municipios/UF", min_value=0, max_value=200, value=5)
         duckdb_threads = pdf_cols[3].number_input("DuckDB threads", min_value=1, max_value=32, value=2)
         incluir_secoes = st.checkbox("Incluir secoes eleitorais", value=False)
+        separado_por_nivel = st.checkbox("Gerar PDFs separados: Brasil, estados e municipios", value=True)
         ufs_pdf = st.text_input("UFs do PDF, separadas por virgula", value=uf)
         if st.button("Disparar PDF"):
             payload = {
@@ -742,6 +1120,7 @@ def main() -> None:
                 "incluir_secoes": bool(incluir_secoes),
                 "duckdb_threads": int(duckdb_threads),
                 "engine": "polars",
+                "separado_por_nivel": bool(separado_por_nivel),
             }
             job = api_post(api_url, "/api/pdf/jobs", payload).get("job", {})
             st.success(f"Job criado: {job.get('id')}")

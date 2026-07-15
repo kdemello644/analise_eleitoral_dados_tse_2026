@@ -146,7 +146,11 @@ PRATA_MINIMA_STREAM_BATCH_ROWS = 20_000
 OURO_MUNICIPIO_PARALLEL_MAX = 4
 OURO_MUNICIPIO_LARGE_ROWS_THRESHOLD = 250_000
 OURO_MUNICIPIO_LARGE_ELEITORADO_THRESHOLD = 1_000_000
+OURO_ANALYSIS_SCHEMA_VERSION = 2
 ENTITY_PARTITION_COLS = ["nivel", "ano", "uf", "cd_municipio"]
+HISTOGRAMA_MUNICIPAL_PARTITION_COLS = ["ano", "uf", "cd_municipio", "dimensao_perfil"]
+HISTOGRAMA_ESTADUAL_PARTITION_COLS = ["ano", "uf", "dimensao_perfil"]
+HISTOGRAMA_BRASIL_PARTITION_COLS = ["ano", "dimensao_perfil"]
 RESULTADOS_SPLIT_LEVELS = [
     ("municipio_bucket", ["cd_municipio"]),
     ("cargo_turno", ["cargo", "turno"]),
@@ -182,15 +186,15 @@ class CleanDatabaseConfig:
 
 def ouro_task_enabled(cfg: CleanDatabaseConfig, task: str) -> bool:
     mode = safe_text(getattr(cfg, "analysis_mode", "completa"), "completa") or "completa"
-    if task in {"resumo", "perfil_eleitor"}:
+    if task in {"resumo", "perfil_eleitor", "histograma_perfil_eleitor"}:
         return mode in {"completa", "eleitor", "candidato", "eleitor_partido", "eleitor_candidato_partido", "estados_brasil"}
-    if task in {"resultado_partido", "perfil_partido"}:
+    if task in {"resultado_partido", "perfil_partido", "histograma_perfil_partido"}:
         return mode in {"completa", "eleitor_partido", "eleitor_candidato_partido", "estados_brasil"}
-    if task in {"resultado_candidato", "perfil_candidato"}:
+    if task in {"resultado_candidato", "perfil_candidato", "histograma_perfil_candidato"}:
         if mode == "completa":
             return not cfg.skip_heavy_analyses
         return mode in {"candidato", "eleitor_candidato_partido"}
-    if task in {"clusters_eleitores", "clusters_eleitores_resultado"}:
+    if task in {"clusters_eleitores", "clusters_eleitores_resultado", "histograma_clusters_eleitores", "histograma_clusters_eleitores_resultado"}:
         return mode == "completa" and not cfg.skip_clusters
     return True
 
@@ -3419,6 +3423,13 @@ def run_ouro_estadual_slice_from_prata_minima(
             chunk_output(analyses / "estadual" / "perfil_eleitor", slice_key),
             partition_by=YEAR_UF_PARTITION_COLS,
         ))
+    if ouro_task_enabled(cfg, "histograma_perfil_eleitor"):
+        tasks.append(copy_task(
+            f"estadual_contagem_colunas_perfil_eleitor_{slice_key}",
+            contagem_colunas_perfil_eleitor_sql(sql_subquery(municipal_perfil_eleitor_from_prata_minima_sql(profile_expr)), "estado"),
+            chunk_output(analyses / "estadual" / "contagem_colunas_perfil_eleitor", slice_key),
+            partition_by=HISTOGRAMA_ESTADUAL_PARTITION_COLS,
+        ))
     if ouro_task_enabled(cfg, "resultado_partido"):
         tasks.append(copy_task(
             f"estadual_resultado_partido_{slice_key}",
@@ -3432,6 +3443,13 @@ def run_ouro_estadual_slice_from_prata_minima(
             aggregate_perfil_entidade_level_sql(sql_subquery(municipal_perfil_entidade_nivel_sql(profile_expr, result_expr, "partido")), "estado", "partido"),
             chunk_output(analyses / "estadual" / "perfil_partido", slice_key),
             partition_by=YEAR_UF_PARTITION_COLS,
+        ))
+    if ouro_task_enabled(cfg, "histograma_perfil_partido"):
+        tasks.append(copy_task(
+            f"estadual_contagem_colunas_perfil_partido_{slice_key}",
+            contagem_colunas_perfil_entidade_sql(sql_subquery(municipal_perfil_entidade_nivel_sql(profile_expr, result_expr, "partido")), "estado", "partido"),
+            chunk_output(analyses / "estadual" / "contagem_colunas_perfil_partido", slice_key),
+            partition_by=HISTOGRAMA_ESTADUAL_PARTITION_COLS,
         ))
     if ouro_task_enabled(cfg, "clusters_eleitores") or ouro_task_enabled(cfg, "clusters_eleitores_resultado"):
         tasks.extend([
@@ -3448,6 +3466,20 @@ def run_ouro_estadual_slice_from_prata_minima(
                 partition_by=YEAR_UF_PARTITION_COLS,
             ),
         ])
+    if ouro_task_enabled(cfg, "histograma_clusters_eleitores"):
+        tasks.append(copy_task(
+            f"estadual_contagem_colunas_clusters_eleitores_{slice_key}",
+            contagem_colunas_clusters_sql(sql_subquery(municipal_clusters_eleitores_sql(profile_expr, cfg)), "estado", "clusters_eleitores"),
+            chunk_output(analyses / "estadual" / "contagem_colunas_clusters_eleitores", slice_key),
+            partition_by=HISTOGRAMA_ESTADUAL_PARTITION_COLS,
+        ))
+    if ouro_task_enabled(cfg, "histograma_clusters_eleitores_resultado"):
+        tasks.append(copy_task(
+            f"estadual_contagem_colunas_clusters_eleitores_resultado_{slice_key}",
+            contagem_colunas_clusters_sql(sql_subquery(municipal_clusters_eleitores_resultado_sql(profile_expr, result_expr, cfg)), "estado", "clusters_eleitores_resultado"),
+            chunk_output(analyses / "estadual" / "contagem_colunas_clusters_eleitores_resultado", slice_key),
+            partition_by=HISTOGRAMA_ESTADUAL_PARTITION_COLS,
+        ))
     if ouro_task_enabled(cfg, "resultado_candidato"):
         tasks.append(
             copy_task(
@@ -3464,6 +3496,15 @@ def run_ouro_estadual_slice_from_prata_minima(
                 aggregate_perfil_entidade_level_sql(sql_subquery(municipal_perfil_entidade_nivel_sql(profile_expr, result_expr, "candidato")), "estado", "candidato"),
                 chunk_output(analyses / "estadual" / "perfil_candidato", slice_key),
                 partition_by=YEAR_UF_PARTITION_COLS,
+            )
+        )
+    if ouro_task_enabled(cfg, "histograma_perfil_candidato"):
+        tasks.append(
+            copy_task(
+                f"estadual_contagem_colunas_perfil_candidato_{slice_key}",
+                contagem_colunas_perfil_entidade_sql(sql_subquery(municipal_perfil_entidade_nivel_sql(profile_expr, result_expr, "candidato")), "estado", "candidato"),
+                chunk_output(analyses / "estadual" / "contagem_colunas_perfil_candidato", slice_key),
+                partition_by=HISTOGRAMA_ESTADUAL_PARTITION_COLS,
             )
         )
     outputs = execute_copy_tasks(tasks, cfg, f"{label}_estadual_{slice_key}")
@@ -3580,6 +3621,13 @@ def run_ouro_municipal_slice(
             chunk_output(analyses / "municipal" / "perfil_eleitor", slice_key),
             partition_by=MUNICIPIO_PARTITION_COLS,
         ))
+    if ouro_task_enabled(cfg, "histograma_perfil_eleitor"):
+        tasks.append(copy_task(
+            f"municipal_contagem_colunas_perfil_eleitor_{slice_key}",
+            contagem_colunas_perfil_eleitor_sql(sql_subquery(municipal_perfil_eleitor_from_prata_minima_sql(profile_expr)), "municipio"),
+            chunk_output(analyses / "municipal" / "contagem_colunas_perfil_eleitor", slice_key),
+            partition_by=HISTOGRAMA_MUNICIPAL_PARTITION_COLS,
+        ))
     if ouro_task_enabled(cfg, "resultado_partido"):
         tasks.append(copy_task(
             f"municipal_resultado_partido_{slice_key}",
@@ -3594,6 +3642,13 @@ def run_ouro_municipal_slice(
             chunk_output(analyses / "municipal" / "perfil_partido", slice_key),
             partition_by=MUNICIPIO_PARTITION_COLS,
         ))
+    if ouro_task_enabled(cfg, "histograma_perfil_partido"):
+        tasks.append(copy_task(
+            f"municipal_contagem_colunas_perfil_partido_{slice_key}",
+            contagem_colunas_perfil_entidade_sql(sql_subquery(municipal_perfil_entidade_nivel_sql(profile_expr, result_expr, "partido")), "municipio", "partido"),
+            chunk_output(analyses / "municipal" / "contagem_colunas_perfil_partido", slice_key),
+            partition_by=HISTOGRAMA_MUNICIPAL_PARTITION_COLS,
+        ))
     if ouro_task_enabled(cfg, "clusters_eleitores"):
         tasks.append(copy_task(
             f"municipal_clusters_eleitores_{slice_key}",
@@ -3601,12 +3656,26 @@ def run_ouro_municipal_slice(
             chunk_output(analyses / "municipal" / "clusters_eleitores", slice_key),
             partition_by=MUNICIPIO_PARTITION_COLS,
         ))
+    if ouro_task_enabled(cfg, "histograma_clusters_eleitores"):
+        tasks.append(copy_task(
+            f"municipal_contagem_colunas_clusters_eleitores_{slice_key}",
+            contagem_colunas_clusters_sql(sql_subquery(municipal_clusters_eleitores_sql(profile_expr, cfg)), "municipio", "clusters_eleitores"),
+            chunk_output(analyses / "municipal" / "contagem_colunas_clusters_eleitores", slice_key),
+            partition_by=HISTOGRAMA_MUNICIPAL_PARTITION_COLS,
+        ))
     if ouro_task_enabled(cfg, "clusters_eleitores_resultado"):
         tasks.append(copy_task(
             f"municipal_clusters_eleitores_resultado_{slice_key}",
             municipal_clusters_eleitores_resultado_sql(profile_expr, result_expr, cfg),
             chunk_output(analyses / "municipal" / "clusters_eleitores_resultado", slice_key),
             partition_by=MUNICIPIO_PARTITION_COLS,
+        ))
+    if ouro_task_enabled(cfg, "histograma_clusters_eleitores_resultado"):
+        tasks.append(copy_task(
+            f"municipal_contagem_colunas_clusters_eleitores_resultado_{slice_key}",
+            contagem_colunas_clusters_sql(sql_subquery(municipal_clusters_eleitores_resultado_sql(profile_expr, result_expr, cfg)), "municipio", "clusters_eleitores_resultado"),
+            chunk_output(analyses / "municipal" / "contagem_colunas_clusters_eleitores_resultado", slice_key),
+            partition_by=HISTOGRAMA_MUNICIPAL_PARTITION_COLS,
         ))
     if ouro_task_enabled(cfg, "resultado_candidato"):
         tasks.append(
@@ -3624,6 +3693,15 @@ def run_ouro_municipal_slice(
                 municipal_perfil_entidade_nivel_sql(profile_expr, result_expr, "candidato"),
                 chunk_output(analyses / "municipal" / "perfil_candidato", slice_key),
                 partition_by=MUNICIPIO_PARTITION_COLS,
+            )
+        )
+    if ouro_task_enabled(cfg, "histograma_perfil_candidato"):
+        tasks.append(
+            copy_task(
+                f"municipal_contagem_colunas_perfil_candidato_{slice_key}",
+                contagem_colunas_perfil_entidade_sql(sql_subquery(municipal_perfil_entidade_nivel_sql(profile_expr, result_expr, "candidato")), "municipio", "candidato"),
+                chunk_output(analyses / "municipal" / "contagem_colunas_perfil_candidato", slice_key),
+                partition_by=HISTOGRAMA_MUNICIPAL_PARTITION_COLS,
             )
         )
     outputs = execute_copy_tasks(tasks, cfg, f"{label}_municipal_{slice_key}")
@@ -3833,6 +3911,13 @@ def run_ouro_municipio_unit(
             municipio_chunk_output(analyses / "municipal" / "perfil_eleitor", slice_key, cd_municipio),
             partition_by=MUNICIPIO_PARTITION_COLS,
         ))
+    if ouro_task_enabled(cfg, "histograma_perfil_eleitor"):
+        tasks.append(copy_task(
+            f"municipal_contagem_colunas_perfil_eleitor_{municipio_key}",
+            contagem_colunas_perfil_eleitor_sql(sql_subquery(municipal_perfil_eleitor_from_prata_minima_sql(municipio_profile_expr)), "municipio"),
+            municipio_chunk_output(analyses / "municipal" / "contagem_colunas_perfil_eleitor", slice_key, cd_municipio),
+            partition_by=HISTOGRAMA_MUNICIPAL_PARTITION_COLS,
+        ))
     if ouro_task_enabled(cfg, "resultado_partido"):
         tasks.append(copy_task(
             f"municipal_resultado_partido_{municipio_key}",
@@ -3847,6 +3932,13 @@ def run_ouro_municipio_unit(
             municipio_chunk_output(analyses / "municipal" / "perfil_partido", slice_key, cd_municipio),
             partition_by=MUNICIPIO_PARTITION_COLS,
         ))
+    if ouro_task_enabled(cfg, "histograma_perfil_partido"):
+        tasks.append(copy_task(
+            f"municipal_contagem_colunas_perfil_partido_{municipio_key}",
+            contagem_colunas_perfil_entidade_sql(sql_subquery(municipal_perfil_entidade_nivel_sql(municipio_profile_expr, municipio_result_expr, "partido")), "municipio", "partido"),
+            municipio_chunk_output(analyses / "municipal" / "contagem_colunas_perfil_partido", slice_key, cd_municipio),
+            partition_by=HISTOGRAMA_MUNICIPAL_PARTITION_COLS,
+        ))
     if ouro_task_enabled(cfg, "clusters_eleitores"):
         tasks.append(copy_task(
             f"municipal_clusters_eleitores_{municipio_key}",
@@ -3854,12 +3946,26 @@ def run_ouro_municipio_unit(
             municipio_chunk_output(analyses / "municipal" / "clusters_eleitores", slice_key, cd_municipio),
             partition_by=MUNICIPIO_PARTITION_COLS,
         ))
+    if ouro_task_enabled(cfg, "histograma_clusters_eleitores"):
+        tasks.append(copy_task(
+            f"municipal_contagem_colunas_clusters_eleitores_{municipio_key}",
+            contagem_colunas_clusters_sql(sql_subquery(municipal_clusters_eleitores_sql(municipio_profile_expr, cfg)), "municipio", "clusters_eleitores"),
+            municipio_chunk_output(analyses / "municipal" / "contagem_colunas_clusters_eleitores", slice_key, cd_municipio),
+            partition_by=HISTOGRAMA_MUNICIPAL_PARTITION_COLS,
+        ))
     if ouro_task_enabled(cfg, "clusters_eleitores_resultado"):
         tasks.append(copy_task(
             f"municipal_clusters_eleitores_resultado_{municipio_key}",
             municipal_clusters_eleitores_resultado_sql(municipio_profile_expr, municipio_result_expr, cfg),
             municipio_chunk_output(analyses / "municipal" / "clusters_eleitores_resultado", slice_key, cd_municipio),
             partition_by=MUNICIPIO_PARTITION_COLS,
+        ))
+    if ouro_task_enabled(cfg, "histograma_clusters_eleitores_resultado"):
+        tasks.append(copy_task(
+            f"municipal_contagem_colunas_clusters_eleitores_resultado_{municipio_key}",
+            contagem_colunas_clusters_sql(sql_subquery(municipal_clusters_eleitores_resultado_sql(municipio_profile_expr, municipio_result_expr, cfg)), "municipio", "clusters_eleitores_resultado"),
+            municipio_chunk_output(analyses / "municipal" / "contagem_colunas_clusters_eleitores_resultado", slice_key, cd_municipio),
+            partition_by=HISTOGRAMA_MUNICIPAL_PARTITION_COLS,
         ))
     if ouro_task_enabled(cfg, "resultado_candidato"):
         tasks.append(
@@ -3877,6 +3983,15 @@ def run_ouro_municipio_unit(
                 municipal_perfil_entidade_nivel_sql(municipio_profile_expr, municipio_result_expr, "candidato"),
                 municipio_chunk_output(analyses / "municipal" / "perfil_candidato", slice_key, cd_municipio),
                 partition_by=MUNICIPIO_PARTITION_COLS,
+            )
+        )
+    if ouro_task_enabled(cfg, "histograma_perfil_candidato"):
+        tasks.append(
+            copy_task(
+                f"municipal_contagem_colunas_perfil_candidato_{municipio_key}",
+                contagem_colunas_perfil_entidade_sql(sql_subquery(municipal_perfil_entidade_nivel_sql(municipio_profile_expr, municipio_result_expr, "candidato")), "municipio", "candidato"),
+                municipio_chunk_output(analyses / "municipal" / "contagem_colunas_perfil_candidato", slice_key, cd_municipio),
+                partition_by=HISTOGRAMA_MUNICIPAL_PARTITION_COLS,
             )
         )
     outputs = execute_copy_tasks(tasks, cfg, municipio_label)
@@ -3899,6 +4014,11 @@ def remove_legacy_municipal_slice_outputs(analyses: Path, slice_key: str) -> Non
         analyses / "municipal" / "perfil_eleitor",
         analyses / "municipal" / "resultado_partido",
         analyses / "municipal" / "perfil_partido",
+        analyses / "municipal" / "contagem_colunas_perfil_eleitor",
+        analyses / "municipal" / "contagem_colunas_perfil_partido",
+        analyses / "municipal" / "contagem_colunas_perfil_candidato",
+        analyses / "municipal" / "contagem_colunas_clusters_eleitores",
+        analyses / "municipal" / "contagem_colunas_clusters_eleitores_resultado",
         analyses / "municipal" / "clusters_eleitores",
         analyses / "municipal" / "clusters_eleitores_resultado",
         analyses / "municipal" / "resultado_candidato",
@@ -3935,26 +4055,41 @@ def run_ouro_estadual_uf(
     perfil_root = analyses / "municipal" / "perfil_eleitor"
     resultado_partido_root = analyses / "municipal" / "resultado_partido"
     perfil_partido_root = analyses / "municipal" / "perfil_partido"
+    hist_perfil_root = analyses / "municipal" / "contagem_colunas_perfil_eleitor"
+    hist_partido_root = analyses / "municipal" / "contagem_colunas_perfil_partido"
+    hist_candidato_root = analyses / "municipal" / "contagem_colunas_perfil_candidato"
+    hist_clusters_eleitores_root = analyses / "municipal" / "contagem_colunas_clusters_eleitores"
+    hist_clusters_resultado_root = analyses / "municipal" / "contagem_colunas_clusters_eleitores_resultado"
     clusters_eleitores_root = analyses / "municipal" / "clusters_eleitores"
     clusters_resultado_root = analyses / "municipal" / "clusters_eleitores_resultado"
     if ouro_task_enabled(cfg, "resumo") and parquet_dataset_exists(resumo_root):
         state_tasks.append(copy_task(f"estadual_resumo_{uf}", aggregate_resumo_level_sql(filter_uf_expr(dataset_expr(resumo_root), uf), "estado"), chunk_output(analyses / "estadual" / "resumo", uf), partition_by=YEAR_UF_PARTITION_COLS))
     if ouro_task_enabled(cfg, "perfil_eleitor") and parquet_dataset_exists(perfil_root):
         state_tasks.append(copy_task(f"estadual_perfil_eleitor_{uf}", aggregate_perfil_eleitor_level_sql(filter_uf_expr(dataset_expr(perfil_root), uf), "estado"), chunk_output(analyses / "estadual" / "perfil_eleitor", uf), partition_by=YEAR_UF_PARTITION_COLS))
+    if ouro_task_enabled(cfg, "histograma_perfil_eleitor") and parquet_dataset_exists(hist_perfil_root):
+        state_tasks.append(copy_task(f"estadual_contagem_colunas_perfil_eleitor_{uf}", aggregate_contagem_perfil_eleitor_level_sql(filter_uf_expr(dataset_expr(hist_perfil_root), uf), "estado"), chunk_output(analyses / "estadual" / "contagem_colunas_perfil_eleitor", uf), partition_by=HISTOGRAMA_ESTADUAL_PARTITION_COLS))
     if ouro_task_enabled(cfg, "resultado_partido") and parquet_dataset_exists(resultado_partido_root):
         state_tasks.append(copy_task(f"estadual_resultado_partido_{uf}", aggregate_resultado_entidade_level_sql(filter_uf_expr(dataset_expr(resultado_partido_root), uf), "estado"), chunk_output(analyses / "estadual" / "resultado_partido", uf), partition_by=YEAR_UF_PARTITION_COLS))
     if ouro_task_enabled(cfg, "perfil_partido") and parquet_dataset_exists(perfil_partido_root):
         state_tasks.append(copy_task(f"estadual_perfil_partido_{uf}", aggregate_perfil_entidade_level_sql(filter_uf_expr(dataset_expr(perfil_partido_root), uf), "estado", "partido"), chunk_output(analyses / "estadual" / "perfil_partido", uf), partition_by=YEAR_UF_PARTITION_COLS))
+    if ouro_task_enabled(cfg, "histograma_perfil_partido") and parquet_dataset_exists(hist_partido_root):
+        state_tasks.append(copy_task(f"estadual_contagem_colunas_perfil_partido_{uf}", aggregate_contagem_perfil_entidade_level_sql(filter_uf_expr(dataset_expr(hist_partido_root), uf), "estado"), chunk_output(analyses / "estadual" / "contagem_colunas_perfil_partido", uf), partition_by=HISTOGRAMA_ESTADUAL_PARTITION_COLS))
     if ouro_task_enabled(cfg, "clusters_eleitores") and parquet_dataset_exists(clusters_eleitores_root):
         state_tasks.append(copy_task(f"estadual_clusters_eleitores_{uf}", aggregate_clusters_level_sql(filter_uf_expr(dataset_expr(clusters_eleitores_root), uf), "estado"), chunk_output(analyses / "estadual" / "clusters_eleitores", uf), partition_by=YEAR_UF_PARTITION_COLS))
+    if ouro_task_enabled(cfg, "histograma_clusters_eleitores") and parquet_dataset_exists(hist_clusters_eleitores_root):
+        state_tasks.append(copy_task(f"estadual_contagem_colunas_clusters_eleitores_{uf}", aggregate_contagem_clusters_level_sql(filter_uf_expr(dataset_expr(hist_clusters_eleitores_root), uf), "estado"), chunk_output(analyses / "estadual" / "contagem_colunas_clusters_eleitores", uf), partition_by=HISTOGRAMA_ESTADUAL_PARTITION_COLS))
     if ouro_task_enabled(cfg, "clusters_eleitores_resultado") and parquet_dataset_exists(clusters_resultado_root):
         state_tasks.append(copy_task(f"estadual_clusters_eleitores_resultado_{uf}", aggregate_clusters_level_sql(filter_uf_expr(dataset_expr(clusters_resultado_root), uf), "estado"), chunk_output(analyses / "estadual" / "clusters_eleitores_resultado", uf), partition_by=YEAR_UF_PARTITION_COLS))
+    if ouro_task_enabled(cfg, "histograma_clusters_eleitores_resultado") and parquet_dataset_exists(hist_clusters_resultado_root):
+        state_tasks.append(copy_task(f"estadual_contagem_colunas_clusters_eleitores_resultado_{uf}", aggregate_contagem_clusters_level_sql(filter_uf_expr(dataset_expr(hist_clusters_resultado_root), uf), "estado"), chunk_output(analyses / "estadual" / "contagem_colunas_clusters_eleitores_resultado", uf), partition_by=HISTOGRAMA_ESTADUAL_PARTITION_COLS))
     resultado_candidato_root = analyses / "municipal" / "resultado_candidato"
     perfil_candidato_root = analyses / "municipal" / "perfil_candidato"
     if ouro_task_enabled(cfg, "resultado_candidato") and parquet_dataset_exists(resultado_candidato_root):
         state_tasks.append(copy_task(f"estadual_resultado_candidato_{uf}", aggregate_resultado_entidade_level_sql(filter_uf_expr(dataset_expr(resultado_candidato_root), uf), "estado"), chunk_output(analyses / "estadual" / "resultado_candidato", uf), partition_by=YEAR_UF_PARTITION_COLS))
     if ouro_task_enabled(cfg, "perfil_candidato") and parquet_dataset_exists(perfil_candidato_root):
         state_tasks.append(copy_task(f"estadual_perfil_candidato_{uf}", aggregate_perfil_entidade_level_sql(filter_uf_expr(dataset_expr(perfil_candidato_root), uf), "estado", "candidato"), chunk_output(analyses / "estadual" / "perfil_candidato", uf), partition_by=YEAR_UF_PARTITION_COLS))
+    if ouro_task_enabled(cfg, "histograma_perfil_candidato") and parquet_dataset_exists(hist_candidato_root):
+        state_tasks.append(copy_task(f"estadual_contagem_colunas_perfil_candidato_{uf}", aggregate_contagem_perfil_entidade_level_sql(filter_uf_expr(dataset_expr(hist_candidato_root), uf), "estado"), chunk_output(analyses / "estadual" / "contagem_colunas_perfil_candidato", uf), partition_by=HISTOGRAMA_ESTADUAL_PARTITION_COLS))
     outputs.update(execute_copy_tasks(state_tasks, cfg, f"{label}_estadual_{uf}"))
     write_ouro_event(progress_dir, label, "estadual_fim", uf=uf, tarefas=len(state_tasks))
     return outputs
@@ -3974,6 +4109,11 @@ def run_ouro_brasil_final(
         "perfil_eleitor": analyses / "estadual" / "perfil_eleitor",
         "resultado_partido": analyses / "estadual" / "resultado_partido",
         "perfil_partido": analyses / "estadual" / "perfil_partido",
+        "contagem_colunas_perfil_eleitor": analyses / "estadual" / "contagem_colunas_perfil_eleitor",
+        "contagem_colunas_perfil_partido": analyses / "estadual" / "contagem_colunas_perfil_partido",
+        "contagem_colunas_perfil_candidato": analyses / "estadual" / "contagem_colunas_perfil_candidato",
+        "contagem_colunas_clusters_eleitores": analyses / "estadual" / "contagem_colunas_clusters_eleitores",
+        "contagem_colunas_clusters_eleitores_resultado": analyses / "estadual" / "contagem_colunas_clusters_eleitores_resultado",
         "clusters_eleitores": analyses / "estadual" / "clusters_eleitores",
         "clusters_eleitores_resultado": analyses / "estadual" / "clusters_eleitores_resultado",
         "resultado_candidato": analyses / "estadual" / "resultado_candidato",
@@ -3983,18 +4123,28 @@ def run_ouro_brasil_final(
         tasks.append(copy_task("brasil_resumo", aggregate_resumo_level_sql(dataset_expr(roots["resumo"]), "brasil"), analyses / "brasil" / "resumo"))
     if ouro_task_enabled(cfg, "perfil_eleitor") and parquet_dataset_exists(roots["perfil_eleitor"]):
         tasks.append(copy_task("brasil_perfil_eleitor", aggregate_perfil_eleitor_level_sql(dataset_expr(roots["perfil_eleitor"]), "brasil"), analyses / "brasil" / "perfil_eleitor"))
+    if ouro_task_enabled(cfg, "histograma_perfil_eleitor") and parquet_dataset_exists(roots["contagem_colunas_perfil_eleitor"]):
+        tasks.append(copy_task("brasil_contagem_colunas_perfil_eleitor", aggregate_contagem_perfil_eleitor_level_sql(dataset_expr(roots["contagem_colunas_perfil_eleitor"]), "brasil"), analyses / "brasil" / "contagem_colunas_perfil_eleitor", partition_by=HISTOGRAMA_BRASIL_PARTITION_COLS))
     if ouro_task_enabled(cfg, "resultado_partido") and parquet_dataset_exists(roots["resultado_partido"]):
         tasks.append(copy_task("brasil_resultado_partido", aggregate_resultado_entidade_level_sql(dataset_expr(roots["resultado_partido"]), "brasil"), analyses / "brasil" / "resultado_partido"))
     if ouro_task_enabled(cfg, "perfil_partido") and parquet_dataset_exists(roots["perfil_partido"]):
         tasks.append(copy_task("brasil_perfil_partido", aggregate_perfil_entidade_level_sql(dataset_expr(roots["perfil_partido"]), "brasil", "partido"), analyses / "brasil" / "perfil_partido"))
+    if ouro_task_enabled(cfg, "histograma_perfil_partido") and parquet_dataset_exists(roots["contagem_colunas_perfil_partido"]):
+        tasks.append(copy_task("brasil_contagem_colunas_perfil_partido", aggregate_contagem_perfil_entidade_level_sql(dataset_expr(roots["contagem_colunas_perfil_partido"]), "brasil"), analyses / "brasil" / "contagem_colunas_perfil_partido", partition_by=HISTOGRAMA_BRASIL_PARTITION_COLS))
     if ouro_task_enabled(cfg, "clusters_eleitores") and parquet_dataset_exists(roots["clusters_eleitores"]):
         tasks.append(copy_task("brasil_clusters_eleitores", aggregate_clusters_level_sql(dataset_expr(roots["clusters_eleitores"]), "brasil"), analyses / "brasil" / "clusters_eleitores"))
+    if ouro_task_enabled(cfg, "histograma_clusters_eleitores") and parquet_dataset_exists(roots["contagem_colunas_clusters_eleitores"]):
+        tasks.append(copy_task("brasil_contagem_colunas_clusters_eleitores", aggregate_contagem_clusters_level_sql(dataset_expr(roots["contagem_colunas_clusters_eleitores"]), "brasil"), analyses / "brasil" / "contagem_colunas_clusters_eleitores", partition_by=HISTOGRAMA_BRASIL_PARTITION_COLS))
     if ouro_task_enabled(cfg, "clusters_eleitores_resultado") and parquet_dataset_exists(roots["clusters_eleitores_resultado"]):
         tasks.append(copy_task("brasil_clusters_eleitores_resultado", aggregate_clusters_level_sql(dataset_expr(roots["clusters_eleitores_resultado"]), "brasil"), analyses / "brasil" / "clusters_eleitores_resultado"))
+    if ouro_task_enabled(cfg, "histograma_clusters_eleitores_resultado") and parquet_dataset_exists(roots["contagem_colunas_clusters_eleitores_resultado"]):
+        tasks.append(copy_task("brasil_contagem_colunas_clusters_eleitores_resultado", aggregate_contagem_clusters_level_sql(dataset_expr(roots["contagem_colunas_clusters_eleitores_resultado"]), "brasil"), analyses / "brasil" / "contagem_colunas_clusters_eleitores_resultado", partition_by=HISTOGRAMA_BRASIL_PARTITION_COLS))
     if ouro_task_enabled(cfg, "resultado_candidato") and parquet_dataset_exists(roots["resultado_candidato"]):
         tasks.append(copy_task("brasil_resultado_candidato", aggregate_resultado_entidade_level_sql(dataset_expr(roots["resultado_candidato"]), "brasil"), analyses / "brasil" / "resultado_candidato"))
     if ouro_task_enabled(cfg, "perfil_candidato") and parquet_dataset_exists(roots["perfil_candidato"]):
         tasks.append(copy_task("brasil_perfil_candidato", aggregate_perfil_entidade_level_sql(dataset_expr(roots["perfil_candidato"]), "brasil", "candidato"), analyses / "brasil" / "perfil_candidato"))
+    if ouro_task_enabled(cfg, "histograma_perfil_candidato") and parquet_dataset_exists(roots["contagem_colunas_perfil_candidato"]):
+        tasks.append(copy_task("brasil_contagem_colunas_perfil_candidato", aggregate_contagem_perfil_entidade_level_sql(dataset_expr(roots["contagem_colunas_perfil_candidato"]), "brasil"), analyses / "brasil" / "contagem_colunas_perfil_candidato", partition_by=HISTOGRAMA_BRASIL_PARTITION_COLS))
     outputs = execute_copy_tasks(tasks, cfg, f"{label}_brasil")
     write_ouro_event(progress_dir, label, "brasil_fim", tarefas=len(tasks))
     return outputs
@@ -5940,7 +6090,13 @@ def reusable_dataset_path(primary: Path, legacy: Path | None = None) -> Path:
 def ouro_task_done(task: dict[str, Any], progress_dir: Path) -> bool:
     marker = progress_dir / f"{safe_name(task.get('name', 'tarefa'), 80)}.done.json"
     out = Path(task["out"])
-    return marker.exists() and output_has_data(out)
+    if not marker.exists() or not output_has_data(out):
+        return False
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return False
+    return int(payload.get("schema_version") or 0) >= OURO_ANALYSIS_SCHEMA_VERSION
 
 
 def copy_task(name: str, sql: str, out: Path, partition_by: list[str] | None = None) -> dict[str, Any]:
@@ -6105,6 +6261,7 @@ def execute_copy_task(task: dict[str, Any], duckdb_threads: int, progress_dir: P
                 "status": "ok",
                 "saida": str(out),
                 "duracao_segundos": round(duration, 3),
+                "schema_version": OURO_ANALYSIS_SCHEMA_VERSION,
             },
             progress_dir / f"{safe_name(task_name, 80)}.done.json",
         )
@@ -7274,6 +7431,8 @@ def municipal_perfil_eleitor_nivel_sql(perfil_expr: str) -> str:
       from agg
     )
     select *,
+           eleitorado as qtd_eleitores_perfil,
+           eleitorado as histograma_qtd_pessoas,
            'Eleitor predominante: ' || perfil_combinado || ' (' || round(share_perfil * 100, 2)::varchar || '%).' as descricao
     from ranked
     """
@@ -7302,10 +7461,20 @@ def municipal_resultado_entidade_nivel_sql(resultados_expr: str, entity_col: str
     ranked as (
       select *,
              votos / nullif(sum(votos) over(partition by nivel, ano, uf, cd_municipio, cargo, turno), 0) as share_votos,
+             sum(votos) over(partition by nivel, ano, uf, cd_municipio, cargo, turno) as votos_total_disputa,
+             max(votos) over(partition by nivel, ano, uf, cd_municipio, cargo, turno) as votos_lider,
              row_number() over(partition by nivel, ano, uf, cd_municipio, cargo, turno order by votos desc) as rank_entidade
       from agg
     )
-    select *
+    select *,
+           case when rank_entidade = 1 then 'vencedor' else 'nao_vencedor' end as resultado_eleitoral,
+           case when rank_entidade = 1 then 'ganhou' else 'perdeu' end as resultado_grupo,
+           votos_lider - votos as margem_votos_para_lider,
+           (votos_lider - votos) / nullif(votos_total_disputa, 0) as margem_share_para_lider,
+           case
+             when rank_entidade = 1 then 'Ganhou porque liderou a disputa em votos neste recorte: ' || entidade || ' teve ' || round(share_votos * 100, 2)::varchar || '% dos votos.'
+             else 'Perdeu porque ficou abaixo do lider por ' || round(votos_lider - votos, 0)::varchar || ' votos neste recorte.'
+           end as interpretacao_resultado
     from ranked
     where rank_entidade <= 50
     """
@@ -7453,7 +7622,9 @@ def municipal_perfil_eleitor_from_section_sql(perfil_secao_expr: str) -> str:
              perfil_estado_civil,
              perfil_raca_cor,
              perfil_combinado,
-             sum({metric_sql('eleitorado_perfil')}) as eleitorado
+             sum({metric_sql('eleitorado_perfil')}) as eleitorado,
+             sum({metric_sql('comparecimento_estimado')}) as comparecimento_estimado,
+             sum({metric_sql('abstencao_estimado')}) as abstencao_estimado
       from {perfil_secao_expr}
       where {valid_sql('perfil_combinado')} and {metric_sql('eleitorado_perfil')} > 0
       group by ano, uf, cd_municipio, perfil_faixa_etaria, perfil_genero, perfil_instrucao, perfil_estado_civil, perfil_raca_cor, perfil_combinado
@@ -7486,7 +7657,9 @@ def municipal_perfil_eleitor_from_prata_minima_sql(perfil_expr: str) -> str:
              perfil_estado_civil,
              perfil_raca_cor,
              {combo} as perfil_combinado,
-             sum({metric_sql('eleitorado_perfil')}) as eleitorado
+             sum({metric_sql('eleitorado_perfil')}) as eleitorado,
+             sum({metric_sql('comparecimento_estimado')}) as comparecimento_estimado,
+             sum({metric_sql('abstencao_estimado')}) as abstencao_estimado
       from {perfil_expr}
       where ({profile_or}) and {metric_sql('eleitorado_perfil')} > 0 and {valid_sql('cd_municipio')}
       group by ano, uf, cd_municipio, perfil_faixa_etaria, perfil_genero, perfil_instrucao, perfil_estado_civil, perfil_raca_cor
@@ -7499,6 +7672,8 @@ def municipal_perfil_eleitor_from_prata_minima_sql(perfil_expr: str) -> str:
       where {valid_sql('perfil_combinado')}
     )
     select *,
+           eleitorado as qtd_eleitores_perfil,
+           eleitorado as histograma_qtd_pessoas,
            'Eleitor predominante: ' || perfil_combinado || ' (' || round(share_perfil * 100, 2)::varchar || '%).' as descricao
     from ranked
     """
@@ -7527,10 +7702,20 @@ def municipal_resultado_entidade_from_base_sql(base_secao_expr: str, entity_col:
     ranked as (
       select *,
              votos / nullif(sum(votos) over(partition by nivel, ano, uf, cd_municipio, cargo, turno), 0) as share_votos,
+             sum(votos) over(partition by nivel, ano, uf, cd_municipio, cargo, turno) as votos_total_disputa,
+             max(votos) over(partition by nivel, ano, uf, cd_municipio, cargo, turno) as votos_lider,
              row_number() over(partition by nivel, ano, uf, cd_municipio, cargo, turno order by votos desc) as rank_entidade
       from agg
     )
-    select *
+    select *,
+           case when rank_entidade = 1 then 'vencedor' else 'nao_vencedor' end as resultado_eleitoral,
+           case when rank_entidade = 1 then 'ganhou' else 'perdeu' end as resultado_grupo,
+           votos_lider - votos as margem_votos_para_lider,
+           (votos_lider - votos) / nullif(votos_total_disputa, 0) as margem_share_para_lider,
+           case
+             when rank_entidade = 1 then 'Ganhou porque liderou a disputa em votos neste recorte: ' || entidade || ' teve ' || round(share_votos * 100, 2)::varchar || '% dos votos.'
+             else 'Perdeu porque ficou abaixo do lider por ' || round(votos_lider - votos, 0)::varchar || ' votos neste recorte.'
+           end as interpretacao_resultado
     from ranked
     where rank_entidade <= 50
     """
@@ -7559,10 +7744,20 @@ def municipal_resultado_entidade_from_resultados_sql(resultados_expr: str, entit
     ranked as (
       select *,
              votos / nullif(sum(votos) over(partition by nivel, ano, uf, cd_municipio, cargo, turno), 0) as share_votos,
+             sum(votos) over(partition by nivel, ano, uf, cd_municipio, cargo, turno) as votos_total_disputa,
+             max(votos) over(partition by nivel, ano, uf, cd_municipio, cargo, turno) as votos_lider,
              row_number() over(partition by nivel, ano, uf, cd_municipio, cargo, turno order by votos desc) as rank_entidade
       from agg
     )
-    select *
+    select *,
+           case when rank_entidade = 1 then 'vencedor' else 'nao_vencedor' end as resultado_eleitoral,
+           case when rank_entidade = 1 then 'ganhou' else 'perdeu' end as resultado_grupo,
+           votos_lider - votos as margem_votos_para_lider,
+           (votos_lider - votos) / nullif(votos_total_disputa, 0) as margem_share_para_lider,
+           case
+             when rank_entidade = 1 then 'Ganhou porque liderou a disputa em votos neste recorte: ' || entidade || ' teve ' || round(share_votos * 100, 2)::varchar || '% dos votos.'
+             else 'Perdeu porque ficou abaixo do lider por ' || round(votos_lider - votos, 0)::varchar || ' votos neste recorte.'
+           end as interpretacao_resultado
     from ranked
     where rank_entidade <= 50
     """
@@ -7592,15 +7787,41 @@ def municipal_perfil_entidade_from_base_sql(base_secao_expr: str, entity_col: st
       group by ano, uf, cd_municipio, cargo, turno, entidade,
                perfil_faixa_etaria, perfil_genero, perfil_instrucao, perfil_estado_civil, perfil_raca_cor
     ),
-    ranked as (
-      select *,
-             votos / nullif(sum(votos) over(partition by nivel, ano, uf, cd_municipio, cargo, turno, entidade), 0) as share_perfil_na_entidade,
-             row_number() over(partition by nivel, ano, uf, cd_municipio, cargo, turno, entidade order by votos desc) as rank_perfil_entidade_ano
+    entidade_total as (
+      select nivel,
+             ano,
+             uf,
+             cd_municipio,
+             cargo,
+             turno,
+             entidade,
+             sum(votos) as votos_entidade_total
       from agg
+      group by nivel, ano, uf, cd_municipio, cargo, turno, entidade
+    ),
+    entidade_rank as (
+      select *,
+             row_number() over(partition by nivel, ano, uf, cd_municipio, cargo, turno order by votos_entidade_total desc) as rank_entidade,
+             max(votos_entidade_total) over(partition by nivel, ano, uf, cd_municipio, cargo, turno) as votos_lider
+      from entidade_total
+    ),
+    ranked as (
+      select a.*,
+             er.votos_entidade_total,
+             er.rank_entidade,
+             case when er.rank_entidade = 1 then 'vencedor' else 'nao_vencedor' end as resultado_eleitoral,
+             er.votos_lider - er.votos_entidade_total as margem_votos_para_lider,
+             a.votos / nullif(sum(a.votos) over(partition by a.nivel, a.ano, a.uf, a.cd_municipio, a.cargo, a.turno, a.entidade), 0) as share_perfil_na_entidade,
+             row_number() over(partition by nivel, ano, uf, cd_municipio, cargo, turno, entidade order by votos desc) as rank_perfil_entidade_ano
+      from agg a
+      left join entidade_rank er using (nivel, ano, uf, cd_municipio, cargo, turno, entidade)
       where {valid_sql('perfil_combinado')}
     )
     select *,
-           'Perfil que mais aparece em ' || tipo_entidade || ' ' || entidade || ': ' || perfil_combinado || ' (' || round(share_perfil_na_entidade * 100, 2)::varchar || '%).' as descricao
+           case when resultado_eleitoral = 'vencedor'
+                then 'Perfil que ajudou a vitoria de ' || tipo_entidade || ' ' || entidade || ': ' || perfil_combinado || ' (' || round(share_perfil_na_entidade * 100, 2)::varchar || '%).'
+                else 'Perfil associado a quem nao liderou em ' || tipo_entidade || ' ' || entidade || ': ' || perfil_combinado || ' (' || round(share_perfil_na_entidade * 100, 2)::varchar || '%).'
+           end as descricao
     from ranked
     where rank_perfil_entidade_ano <= 10
     """
@@ -7626,14 +7847,41 @@ def municipal_perfil_entidade_nivel_sql(perfil_expr: str, resultados_expr: str, 
       where {valid_sql('perfil_combinado')} and {valid_sql('entidade')} and {metric_sql('votos_proxy')} > 0
       group by ano, uf, cd_municipio, cargo, turno, entidade, perfil_combinado
     ),
-    final as (
-      select *,
-             votos / nullif(sum(votos) over(partition by nivel, ano, uf, cd_municipio, cargo, turno, entidade), 0) as share_perfil_na_entidade,
-             row_number() over(partition by nivel, ano, uf, cd_municipio, cargo, turno, entidade order by votos desc) as rank_perfil_entidade_ano
+    entidade_total as (
+      select nivel,
+             ano,
+             uf,
+             cd_municipio,
+             cargo,
+             turno,
+             entidade,
+             sum(votos) as votos_entidade_total
       from ranked
+      group by nivel, ano, uf, cd_municipio, cargo, turno, entidade
+    ),
+    entidade_rank as (
+      select *,
+             row_number() over(partition by nivel, ano, uf, cd_municipio, cargo, turno order by votos_entidade_total desc) as rank_entidade,
+             max(votos_entidade_total) over(partition by nivel, ano, uf, cd_municipio, cargo, turno) as votos_lider
+      from entidade_total
+    ),
+    final as (
+      select r.*,
+             er.votos_entidade_total,
+             er.rank_entidade,
+             er.votos_lider,
+             r.votos / nullif(sum(r.votos) over(partition by r.nivel, r.ano, r.uf, r.cd_municipio, r.cargo, r.turno, r.entidade), 0) as share_perfil_na_entidade,
+             row_number() over(partition by r.nivel, r.ano, r.uf, r.cd_municipio, r.cargo, r.turno, r.entidade order by r.votos desc) as rank_perfil_entidade_ano
+      from ranked r
+      left join entidade_rank er using (nivel, ano, uf, cd_municipio, cargo, turno, entidade)
     )
     select *,
-           'Perfil que mais aparece em ' || tipo_entidade || ' ' || entidade || ': ' || perfil_combinado || ' (' || round(share_perfil_na_entidade * 100, 2)::varchar || '%).' as descricao
+           case when rank_entidade = 1 then 'vencedor' else 'nao_vencedor' end as resultado_eleitoral,
+           votos_lider - votos_entidade_total as margem_votos_para_lider,
+           case when rank_entidade = 1
+                then 'Perfil que ajudou a vitoria de ' || tipo_entidade || ' ' || entidade || ': ' || perfil_combinado || ' (' || round(share_perfil_na_entidade * 100, 2)::varchar || '%).'
+                else 'Perfil associado a quem nao liderou em ' || tipo_entidade || ' ' || entidade || ': ' || perfil_combinado || ' (' || round(share_perfil_na_entidade * 100, 2)::varchar || '%).'
+           end as descricao
     from final
     where rank_perfil_entidade_ano <= 10
     """
@@ -7855,7 +8103,9 @@ def aggregate_perfil_eleitor_level_sql(source_expr: str, level: str) -> str:
              perfil_estado_civil,
              perfil_raca_cor,
              perfil_combinado,
-             sum({metric_sql('eleitorado')}) as eleitorado
+             sum({metric_sql('eleitorado')}) as eleitorado,
+             sum({metric_sql('comparecimento_estimado')}) as comparecimento_estimado,
+             sum({metric_sql('abstencao_estimado')}) as abstencao_estimado
       from {source_expr}
       where {valid_sql('perfil_combinado')} and {metric_sql('eleitorado')} > 0
       group by {group_cols}
@@ -7867,6 +8117,10 @@ def aggregate_perfil_eleitor_level_sql(source_expr: str, level: str) -> str:
       from agg
     )
     select *,
+           eleitorado as qtd_eleitores_perfil,
+           eleitorado as histograma_qtd_pessoas,
+           comparecimento_estimado / nullif(eleitorado, 0) as taxa_comparecimento_perfil,
+           abstencao_estimado / nullif(eleitorado, 0) as taxa_abstencao_perfil,
            'Eleitor predominante: ' || perfil_combinado || ' (' || round(share_perfil * 100, 2)::varchar || '%).' as descricao
     from ranked
     """
@@ -7901,10 +8155,20 @@ def aggregate_resultado_entidade_level_sql(source_expr: str, level: str) -> str:
     ranked as (
       select *,
              votos / nullif(sum(votos) over(partition by {partition}), 0) as share_votos,
+             sum(votos) over(partition by {partition}) as votos_total_disputa,
+             max(votos) over(partition by {partition}) as votos_lider,
              row_number() over(partition by {partition} order by votos desc) as rank_entidade
       from agg
     )
-    select *
+    select *,
+           case when rank_entidade = 1 then 'vencedor' else 'nao_vencedor' end as resultado_eleitoral,
+           case when rank_entidade = 1 then 'ganhou' else 'perdeu' end as resultado_grupo,
+           votos_lider - votos as margem_votos_para_lider,
+           (votos_lider - votos) / nullif(votos_total_disputa, 0) as margem_share_para_lider,
+           case
+             when rank_entidade = 1 then 'Ganhou porque liderou a disputa em votos neste recorte: ' || entidade || ' teve ' || round(share_votos * 100, 2)::varchar || '% dos votos.'
+             else 'Perdeu porque ficou abaixo do lider por ' || round(votos_lider - votos, 0)::varchar || ' votos neste recorte.'
+           end as interpretacao_resultado
     from ranked
     where rank_entidade <= 50
     """
@@ -7915,10 +8179,12 @@ def aggregate_perfil_entidade_level_sql(source_expr: str, level: str, entity_col
         group_cols = "ano, uf, cargo, turno, entidade, perfil_combinado"
         select_loc = "uf, '' as cd_municipio, '' as nm_municipio"
         partition = "nivel, ano, uf, cargo, turno, entidade"
+        entity_scope = "nivel, ano, uf, cargo, turno"
     else:
         group_cols = "ano, cargo, turno, entidade, perfil_combinado"
         select_loc = "'' as uf, '' as cd_municipio, '' as nm_municipio"
         partition = "nivel, ano, cargo, turno, entidade"
+        entity_scope = "nivel, ano, cargo, turno"
     return f"""
     with agg as (
       select '{level}' as nivel,
@@ -7934,14 +8200,36 @@ def aggregate_perfil_entidade_level_sql(source_expr: str, level: str, entity_col
       where {valid_sql('perfil_combinado')} and {valid_sql('entidade')} and {metric_sql('votos')} > 0
       group by {group_cols}
     ),
-    ranked as (
-      select *,
-             votos / nullif(sum(votos) over(partition by {partition}), 0) as share_perfil_na_entidade,
-             row_number() over(partition by {partition} order by votos desc) as rank_perfil_entidade_ano
+    entidade_total as (
+      select {entity_scope},
+             entidade,
+             sum(votos) as votos_entidade_total
       from agg
+      group by {entity_scope}, entidade
+    ),
+    entidade_rank as (
+      select *,
+             row_number() over(partition by {entity_scope} order by votos_entidade_total desc) as rank_entidade,
+             max(votos_entidade_total) over(partition by {entity_scope}) as votos_lider
+      from entidade_total
+    ),
+    ranked as (
+      select a.*,
+             er.votos_entidade_total,
+             er.rank_entidade,
+             er.votos_lider,
+             a.votos / nullif(sum(a.votos) over(partition by {partition}), 0) as share_perfil_na_entidade,
+             row_number() over(partition by {partition} order by a.votos desc) as rank_perfil_entidade_ano
+      from agg a
+      left join entidade_rank er using ({entity_scope}, entidade)
     )
     select *,
-           'Perfil que mais aparece em ' || tipo_entidade || ' ' || entidade || ': ' || perfil_combinado || ' (' || round(share_perfil_na_entidade * 100, 2)::varchar || '%).' as descricao
+           case when rank_entidade = 1 then 'vencedor' else 'nao_vencedor' end as resultado_eleitoral,
+           votos_lider - votos_entidade_total as margem_votos_para_lider,
+           case when rank_entidade = 1
+                then 'Perfil que ajudou a vitoria de ' || tipo_entidade || ' ' || entidade || ': ' || perfil_combinado || ' (' || round(share_perfil_na_entidade * 100, 2)::varchar || '%).'
+                else 'Perfil associado a quem nao liderou em ' || tipo_entidade || ' ' || entidade || ': ' || perfil_combinado || ' (' || round(share_perfil_na_entidade * 100, 2)::varchar || '%).'
+           end as descricao
     from ranked
     where rank_perfil_entidade_ano <= 10
     """
@@ -7996,6 +8284,289 @@ def aggregate_clusters_level_sql(source_expr: str, level: str) -> str:
            end as descricao
     from ranked
     where rank_persona_cluster <= 5
+    """
+
+
+def histogram_partition_cols(level: str) -> list[str]:
+    if level == "brasil":
+        return HISTOGRAMA_BRASIL_PARTITION_COLS
+    if level == "estado":
+        return HISTOGRAMA_ESTADUAL_PARTITION_COLS
+    return HISTOGRAMA_MUNICIPAL_PARTITION_COLS
+
+
+def histogram_level_parts(level: str) -> tuple[str, str]:
+    if level == "brasil":
+        return "ano, '' as uf, '' as cd_municipio, '' as nm_municipio", "ano"
+    if level == "estado":
+        return "ano, uf, '' as cd_municipio, '' as nm_municipio", "ano, uf"
+    return "ano, uf, cd_municipio, any_value(nm_municipio) as nm_municipio", "ano, uf, cd_municipio"
+
+
+def combo_extract_sql(combo_col: str, key: str) -> str:
+    return f"nullif(trim(regexp_extract(cast({combo_col} as varchar), {sql_lit(key + '=([^;]+)')}, 1)), '')"
+
+
+def profile_dimension_expr(col: str, combo_key: str) -> str:
+    return f"coalesce(case when {valid_sql(col)} then cast({col} as varchar) end, {combo_extract_sql('perfil_combinado', combo_key)}, '')"
+
+
+def combo_dimension_expr(combo_key: str) -> str:
+    return f"coalesce({combo_extract_sql('perfil_combinado', combo_key)}, '')"
+
+
+def contagem_colunas_perfil_eleitor_sql(source_expr: str, level: str) -> str:
+    select_loc, _group_loc = histogram_level_parts(level)
+    return f"""
+    with base as (
+      select '{level}' as nivel,
+             {select_loc},
+             {profile_dimension_expr('perfil_faixa_etaria', 'faixa_etaria')} as perfil_faixa_etaria,
+             {profile_dimension_expr('perfil_genero', 'sexo_genero')} as perfil_genero,
+             {profile_dimension_expr('perfil_instrucao', 'escolaridade')} as perfil_instrucao,
+             {profile_dimension_expr('perfil_estado_civil', 'estado_civil')} as perfil_estado_civil,
+             {profile_dimension_expr('perfil_raca_cor', 'raca_cor')} as perfil_raca_cor,
+             cast(perfil_combinado as varchar) as perfil_combinado,
+             sum({metric_sql('eleitorado')}) as qtd_pessoas,
+             sum({metric_sql('comparecimento_estimado')}) as comparecimento_estimado,
+             sum({metric_sql('abstencao_estimado')}) as abstencao_estimado
+      from {source_expr}
+      where {metric_sql('eleitorado')} > 0
+      group by all
+    ),
+    unioned as (
+      select nivel, ano, uf, cd_municipio, nm_municipio, 'perfil_eleitor' as tipo_histograma, 'perfil_combinado' as dimensao_perfil, perfil_combinado as valor_perfil, sum(qtd_pessoas) as qtd_pessoas, sum(comparecimento_estimado) as comparecimento_estimado, sum(abstencao_estimado) as abstencao_estimado from base group by all
+      union all
+      select nivel, ano, uf, cd_municipio, nm_municipio, 'perfil_eleitor' as tipo_histograma, 'faixa_etaria' as dimensao_perfil, perfil_faixa_etaria as valor_perfil, sum(qtd_pessoas) as qtd_pessoas, sum(comparecimento_estimado) as comparecimento_estimado, sum(abstencao_estimado) as abstencao_estimado from base group by all
+      union all
+      select nivel, ano, uf, cd_municipio, nm_municipio, 'perfil_eleitor' as tipo_histograma, 'sexo_genero' as dimensao_perfil, perfil_genero as valor_perfil, sum(qtd_pessoas) as qtd_pessoas, sum(comparecimento_estimado) as comparecimento_estimado, sum(abstencao_estimado) as abstencao_estimado from base group by all
+      union all
+      select nivel, ano, uf, cd_municipio, nm_municipio, 'perfil_eleitor' as tipo_histograma, 'escolaridade' as dimensao_perfil, perfil_instrucao as valor_perfil, sum(qtd_pessoas) as qtd_pessoas, sum(comparecimento_estimado) as comparecimento_estimado, sum(abstencao_estimado) as abstencao_estimado from base group by all
+      union all
+      select nivel, ano, uf, cd_municipio, nm_municipio, 'perfil_eleitor' as tipo_histograma, 'estado_civil' as dimensao_perfil, perfil_estado_civil as valor_perfil, sum(qtd_pessoas) as qtd_pessoas, sum(comparecimento_estimado) as comparecimento_estimado, sum(abstencao_estimado) as abstencao_estimado from base group by all
+      union all
+      select nivel, ano, uf, cd_municipio, nm_municipio, 'perfil_eleitor' as tipo_histograma, 'raca_cor' as dimensao_perfil, perfil_raca_cor as valor_perfil, sum(qtd_pessoas) as qtd_pessoas, sum(comparecimento_estimado) as comparecimento_estimado, sum(abstencao_estimado) as abstencao_estimado from base group by all
+    ),
+    clean as (
+      select *
+      from unioned
+      where qtd_pessoas > 0 and {valid_sql('valor_perfil')}
+    ),
+    ranked as (
+      select *,
+             qtd_pessoas / nullif(sum(qtd_pessoas) over(partition by nivel, ano, uf, cd_municipio, dimensao_perfil), 0) as share_histograma,
+             comparecimento_estimado / nullif(qtd_pessoas, 0) as taxa_comparecimento,
+             abstencao_estimado / nullif(qtd_pessoas, 0) as taxa_abstencao,
+             row_number() over(partition by nivel, ano, uf, cd_municipio, dimensao_perfil order by qtd_pessoas desc) as rank_histograma
+      from clean
+    )
+    select *,
+           case when dimensao_perfil = 'perfil_combinado' then 'barra' else 'pizza_barra' end as grafico_sugerido,
+           'Contagem de ' || dimensao_perfil || ': ' || valor_perfil || ' representa ' || round(share_histograma * 100, 2)::varchar || '% do eleitorado neste recorte.' as descricao
+    from ranked
+    where rank_histograma <= 200
+    """
+
+
+def contagem_colunas_perfil_entidade_sql(source_expr: str, level: str, entity_col: str) -> str:
+    select_loc, _group_loc = histogram_level_parts(level)
+    return f"""
+    with base as (
+      select '{level}' as nivel,
+             {select_loc},
+             cargo,
+             turno,
+             entidade,
+             coalesce(resultado_eleitoral, '') as resultado_eleitoral,
+             {combo_dimension_expr('faixa_etaria')} as perfil_faixa_etaria,
+             {combo_dimension_expr('sexo_genero')} as perfil_genero,
+             {combo_dimension_expr('escolaridade')} as perfil_instrucao,
+             {combo_dimension_expr('estado_civil')} as perfil_estado_civil,
+             {combo_dimension_expr('raca_cor')} as perfil_raca_cor,
+             cast(perfil_combinado as varchar) as perfil_combinado,
+             sum({metric_sql('votos')}) as qtd_votos
+      from {source_expr}
+      where {valid_sql('entidade')} and {valid_sql('perfil_combinado')} and {metric_sql('votos')} > 0
+      group by all
+    ),
+    unioned as (
+      select nivel, ano, uf, cd_municipio, nm_municipio, cargo, turno, '{entity_col}' as tipo_entidade, entidade, resultado_eleitoral, 'perfil_' || '{entity_col}' as tipo_histograma, 'perfil_combinado' as dimensao_perfil, perfil_combinado as valor_perfil, sum(qtd_votos) as qtd_votos from base group by all
+      union all
+      select nivel, ano, uf, cd_municipio, nm_municipio, cargo, turno, '{entity_col}' as tipo_entidade, entidade, resultado_eleitoral, 'perfil_' || '{entity_col}' as tipo_histograma, 'faixa_etaria' as dimensao_perfil, perfil_faixa_etaria as valor_perfil, sum(qtd_votos) as qtd_votos from base group by all
+      union all
+      select nivel, ano, uf, cd_municipio, nm_municipio, cargo, turno, '{entity_col}' as tipo_entidade, entidade, resultado_eleitoral, 'perfil_' || '{entity_col}' as tipo_histograma, 'sexo_genero' as dimensao_perfil, perfil_genero as valor_perfil, sum(qtd_votos) as qtd_votos from base group by all
+      union all
+      select nivel, ano, uf, cd_municipio, nm_municipio, cargo, turno, '{entity_col}' as tipo_entidade, entidade, resultado_eleitoral, 'perfil_' || '{entity_col}' as tipo_histograma, 'escolaridade' as dimensao_perfil, perfil_instrucao as valor_perfil, sum(qtd_votos) as qtd_votos from base group by all
+      union all
+      select nivel, ano, uf, cd_municipio, nm_municipio, cargo, turno, '{entity_col}' as tipo_entidade, entidade, resultado_eleitoral, 'perfil_' || '{entity_col}' as tipo_histograma, 'estado_civil' as dimensao_perfil, perfil_estado_civil as valor_perfil, sum(qtd_votos) as qtd_votos from base group by all
+      union all
+      select nivel, ano, uf, cd_municipio, nm_municipio, cargo, turno, '{entity_col}' as tipo_entidade, entidade, resultado_eleitoral, 'perfil_' || '{entity_col}' as tipo_histograma, 'raca_cor' as dimensao_perfil, perfil_raca_cor as valor_perfil, sum(qtd_votos) as qtd_votos from base group by all
+    ),
+    clean as (
+      select *
+      from unioned
+      where qtd_votos > 0 and {valid_sql('valor_perfil')}
+    ),
+    ranked as (
+      select *,
+             qtd_votos / nullif(sum(qtd_votos) over(partition by nivel, ano, uf, cd_municipio, cargo, turno, tipo_entidade, entidade, dimensao_perfil), 0) as share_histograma,
+             row_number() over(partition by nivel, ano, uf, cd_municipio, cargo, turno, tipo_entidade, entidade, dimensao_perfil order by qtd_votos desc) as rank_histograma
+      from clean
+    )
+    select *,
+           case when dimensao_perfil = 'perfil_combinado' then 'barra' else 'pizza_barra' end as grafico_sugerido,
+           'No ' || tipo_entidade || ' ' || entidade || ', ' || dimensao_perfil || '=' || valor_perfil || ' representa ' || round(share_histograma * 100, 2)::varchar || '% do recorte.' as descricao
+    from ranked
+    where rank_histograma <= 200
+    """
+
+
+def contagem_colunas_clusters_sql(source_expr: str, level: str, cluster_kind: str) -> str:
+    select_loc, _group_loc = histogram_level_parts(level)
+    peso = "greatest(sum({eleitorado}), sum({votos_proxy}))".format(eleitorado=metric_sql("eleitorado"), votos_proxy=metric_sql("votos_proxy"))
+    return f"""
+    with base as (
+      select '{level}' as nivel,
+             {select_loc},
+             cluster_id,
+             cluster_tipo,
+             partido,
+             {profile_dimension_expr('perfil_faixa_etaria', 'faixa_etaria')} as perfil_faixa_etaria,
+             {profile_dimension_expr('perfil_genero', 'sexo_genero')} as perfil_genero,
+             {profile_dimension_expr('perfil_instrucao', 'escolaridade')} as perfil_instrucao,
+             {profile_dimension_expr('perfil_estado_civil', 'estado_civil')} as perfil_estado_civil,
+             {profile_dimension_expr('perfil_raca_cor', 'raca_cor')} as perfil_raca_cor,
+             cast(perfil_combinado as varchar) as perfil_combinado,
+             {peso} as qtd_pessoas
+      from {source_expr}
+      where {valid_sql('perfil_combinado')}
+      group by all
+    ),
+    unioned as (
+      select nivel, ano, uf, cd_municipio, nm_municipio, '{cluster_kind}' as tipo_histograma, cluster_id, cluster_tipo, partido, 'perfil_combinado' as dimensao_perfil, perfil_combinado as valor_perfil, sum(qtd_pessoas) as qtd_pessoas from base group by all
+      union all
+      select nivel, ano, uf, cd_municipio, nm_municipio, '{cluster_kind}' as tipo_histograma, cluster_id, cluster_tipo, partido, 'faixa_etaria' as dimensao_perfil, perfil_faixa_etaria as valor_perfil, sum(qtd_pessoas) as qtd_pessoas from base group by all
+      union all
+      select nivel, ano, uf, cd_municipio, nm_municipio, '{cluster_kind}' as tipo_histograma, cluster_id, cluster_tipo, partido, 'sexo_genero' as dimensao_perfil, perfil_genero as valor_perfil, sum(qtd_pessoas) as qtd_pessoas from base group by all
+      union all
+      select nivel, ano, uf, cd_municipio, nm_municipio, '{cluster_kind}' as tipo_histograma, cluster_id, cluster_tipo, partido, 'escolaridade' as dimensao_perfil, perfil_instrucao as valor_perfil, sum(qtd_pessoas) as qtd_pessoas from base group by all
+      union all
+      select nivel, ano, uf, cd_municipio, nm_municipio, '{cluster_kind}' as tipo_histograma, cluster_id, cluster_tipo, partido, 'estado_civil' as dimensao_perfil, perfil_estado_civil as valor_perfil, sum(qtd_pessoas) as qtd_pessoas from base group by all
+      union all
+      select nivel, ano, uf, cd_municipio, nm_municipio, '{cluster_kind}' as tipo_histograma, cluster_id, cluster_tipo, partido, 'raca_cor' as dimensao_perfil, perfil_raca_cor as valor_perfil, sum(qtd_pessoas) as qtd_pessoas from base group by all
+    ),
+    clean as (
+      select *
+      from unioned
+      where qtd_pessoas > 0 and {valid_sql('valor_perfil')}
+    ),
+    ranked as (
+      select *,
+             qtd_pessoas / nullif(sum(qtd_pessoas) over(partition by nivel, ano, uf, cd_municipio, cluster_id, dimensao_perfil), 0) as share_histograma,
+             row_number() over(partition by nivel, ano, uf, cd_municipio, cluster_id, dimensao_perfil order by qtd_pessoas desc) as rank_histograma
+      from clean
+    )
+    select *,
+           case when dimensao_perfil = 'perfil_combinado' then 'barra' else 'pizza_barra' end as grafico_sugerido,
+           'Cluster ' || cluster_id::varchar || ': ' || dimensao_perfil || '=' || valor_perfil || ' representa ' || round(share_histograma * 100, 2)::varchar || '% do cluster.' as descricao
+    from ranked
+    where rank_histograma <= 200
+    """
+
+
+def aggregate_contagem_perfil_eleitor_level_sql(source_expr: str, level: str) -> str:
+    select_loc, group_loc = histogram_level_parts(level)
+    return f"""
+    with agg as (
+      select '{level}' as nivel,
+             {select_loc},
+             tipo_histograma,
+             dimensao_perfil,
+             valor_perfil,
+             sum({metric_sql('qtd_pessoas')}) as qtd_pessoas,
+             sum({metric_sql('comparecimento_estimado')}) as comparecimento_estimado,
+             sum({metric_sql('abstencao_estimado')}) as abstencao_estimado
+      from {source_expr}
+      where {valid_sql('valor_perfil')} and {metric_sql('qtd_pessoas')} > 0
+      group by {group_loc}, tipo_histograma, dimensao_perfil, valor_perfil
+    ),
+    ranked as (
+      select *,
+             qtd_pessoas / nullif(sum(qtd_pessoas) over(partition by nivel, ano, uf, cd_municipio, dimensao_perfil), 0) as share_histograma,
+             comparecimento_estimado / nullif(qtd_pessoas, 0) as taxa_comparecimento,
+             abstencao_estimado / nullif(qtd_pessoas, 0) as taxa_abstencao,
+             row_number() over(partition by nivel, ano, uf, cd_municipio, dimensao_perfil order by qtd_pessoas desc) as rank_histograma
+      from agg
+    )
+    select *,
+           case when dimensao_perfil = 'perfil_combinado' then 'barra' else 'pizza_barra' end as grafico_sugerido,
+           'Contagem de ' || dimensao_perfil || ': ' || valor_perfil || ' representa ' || round(share_histograma * 100, 2)::varchar || '% do eleitorado neste recorte.' as descricao
+    from ranked
+    where rank_histograma <= 200
+    """
+
+
+def aggregate_contagem_perfil_entidade_level_sql(source_expr: str, level: str) -> str:
+    select_loc, group_loc = histogram_level_parts(level)
+    return f"""
+    with agg as (
+      select '{level}' as nivel,
+             {select_loc},
+             cargo,
+             turno,
+             tipo_entidade,
+             entidade,
+             resultado_eleitoral,
+             tipo_histograma,
+             dimensao_perfil,
+             valor_perfil,
+             sum({metric_sql('qtd_votos')}) as qtd_votos
+      from {source_expr}
+      where {valid_sql('valor_perfil')} and {valid_sql('entidade')} and {metric_sql('qtd_votos')} > 0
+      group by {group_loc}, cargo, turno, tipo_entidade, entidade, resultado_eleitoral, tipo_histograma, dimensao_perfil, valor_perfil
+    ),
+    ranked as (
+      select *,
+             qtd_votos / nullif(sum(qtd_votos) over(partition by nivel, ano, uf, cd_municipio, cargo, turno, tipo_entidade, entidade, dimensao_perfil), 0) as share_histograma,
+             row_number() over(partition by nivel, ano, uf, cd_municipio, cargo, turno, tipo_entidade, entidade, dimensao_perfil order by qtd_votos desc) as rank_histograma
+      from agg
+    )
+    select *,
+           case when dimensao_perfil = 'perfil_combinado' then 'barra' else 'pizza_barra' end as grafico_sugerido,
+           'No ' || tipo_entidade || ' ' || entidade || ', ' || dimensao_perfil || '=' || valor_perfil || ' representa ' || round(share_histograma * 100, 2)::varchar || '% do recorte.' as descricao
+    from ranked
+    where rank_histograma <= 200
+    """
+
+
+def aggregate_contagem_clusters_level_sql(source_expr: str, level: str) -> str:
+    select_loc, group_loc = histogram_level_parts(level)
+    return f"""
+    with agg as (
+      select '{level}' as nivel,
+             {select_loc},
+             tipo_histograma,
+             cluster_id,
+             cluster_tipo,
+             partido,
+             dimensao_perfil,
+             valor_perfil,
+             sum({metric_sql('qtd_pessoas')}) as qtd_pessoas
+      from {source_expr}
+      where {valid_sql('valor_perfil')} and {metric_sql('qtd_pessoas')} > 0
+      group by {group_loc}, tipo_histograma, cluster_id, cluster_tipo, partido, dimensao_perfil, valor_perfil
+    ),
+    ranked as (
+      select *,
+             qtd_pessoas / nullif(sum(qtd_pessoas) over(partition by nivel, ano, uf, cd_municipio, cluster_id, dimensao_perfil), 0) as share_histograma,
+             row_number() over(partition by nivel, ano, uf, cd_municipio, cluster_id, dimensao_perfil order by qtd_pessoas desc) as rank_histograma
+      from agg
+    )
+    select *,
+           case when dimensao_perfil = 'perfil_combinado' then 'barra' else 'pizza_barra' end as grafico_sugerido,
+           'Cluster ' || cluster_id::varchar || ': ' || dimensao_perfil || '=' || valor_perfil || ' representa ' || round(share_histograma * 100, 2)::varchar || '% do cluster.' as descricao
+    from ranked
+    where rank_histograma <= 200
     """
 
 

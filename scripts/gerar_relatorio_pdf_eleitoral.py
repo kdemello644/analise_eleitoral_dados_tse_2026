@@ -28,6 +28,11 @@ except ModuleNotFoundError as exc:
     raise SystemExit(1) from exc
 
 try:
+    import polars as pl
+except ModuleNotFoundError:  # pragma: no cover - ambiente sem Polars usa pandas/DuckDB
+    pl = None  # type: ignore[assignment]
+
+try:
     from parquet_query_polars_eleitoral import (
         ANALYSIS_MODES,
         MODE_LABELS,
@@ -80,8 +85,11 @@ TABLE_CANDIDATES: dict[str, list[str]] = {
     "timeline_uf": ["ouro/estadual/resumo", "ouro/timeline_uf", "ouro/timeline_uf.parquet", "global/parquet/timeline_uf.parquet"],
     "timeline_municipal": ["ouro/municipal/resumo", "ouro/timeline_municipal", "ouro/timeline_municipal.parquet", "global/parquet/timeline_municipal.parquet"],
     "perfil_ano": ["ouro/perfil_eleitor_por_ano", "ouro/brasil/perfil_eleitor", "ouro/estadual/perfil_eleitor", "ouro/municipal/perfil_eleitor", "ouro/perfil_eleitor_por_ano.parquet"],
+    "contagem_colunas_perfil_eleitor": ["ouro/brasil/contagem_colunas_perfil_eleitor", "ouro/estadual/contagem_colunas_perfil_eleitor", "ouro/municipal/contagem_colunas_perfil_eleitor"],
     "perfil_partido": ["ouro/brasil/perfil_partido", "ouro/estadual/perfil_partido", "ouro/municipal/perfil_partido", "ouro/perfil_eleitor_por_partido", "ouro/perfil_eleitor_por_partido.parquet"],
+    "contagem_colunas_perfil_partido": ["ouro/brasil/contagem_colunas_perfil_partido", "ouro/estadual/contagem_colunas_perfil_partido", "ouro/municipal/contagem_colunas_perfil_partido"],
     "perfil_candidato": ["ouro/brasil/perfil_candidato", "ouro/estadual/perfil_candidato", "ouro/municipal/perfil_candidato", "ouro/perfil_eleitor_por_candidato", "ouro/perfil_eleitor_por_candidato.parquet"],
+    "contagem_colunas_perfil_candidato": ["ouro/brasil/contagem_colunas_perfil_candidato", "ouro/estadual/contagem_colunas_perfil_candidato", "ouro/municipal/contagem_colunas_perfil_candidato"],
     "resultado_partido": ["ouro/brasil/resultado_partido", "ouro/estadual/resultado_partido", "ouro/municipal/resultado_partido"],
     "resultado_candidato": ["ouro/brasil/resultado_candidato", "ouro/estadual/resultado_candidato", "ouro/municipal/resultado_candidato"],
     "top10_perfis": ["ouro/top10_perfis_federacao_estado_municipio", "ouro/brasil/perfil_eleitor", "ouro/estadual/perfil_eleitor", "ouro/municipal/perfil_eleitor", "ouro/top10_perfis_federacao_estado_municipio.parquet"],
@@ -94,6 +102,9 @@ TABLE_CANDIDATES: dict[str, list[str]] = {
     "sim_partidos_municipios": ["preditivo_2026/parquet/partidos_2026_municipios.parquet", "preditivo_2026/tabelas/partidos_2026_municipios.csv"],
     "sim_partidos_correlacao": ["preditivo_2026/parquet/partidos_2026_correlacao_historica.parquet", "preditivo_2026/tabelas/partidos_2026_correlacao_historica.csv"],
     "cluster_voter_personas": [
+        "ouro/brasil/contagem_colunas_clusters_eleitores",
+        "ouro/estadual/contagem_colunas_clusters_eleitores",
+        "ouro/municipal/contagem_colunas_clusters_eleitores",
         "ouro/brasil/clusters_eleitores",
         "ouro/estadual/clusters_eleitores",
         "ouro/municipal/clusters_eleitores",
@@ -101,6 +112,9 @@ TABLE_CANDIDATES: dict[str, list[str]] = {
         "global/correlacao_codigos/clusters/tabelas/clusters_eleitores_personas.csv",
     ],
     "cluster_result_personas": [
+        "ouro/brasil/contagem_colunas_clusters_eleitores_resultado",
+        "ouro/estadual/contagem_colunas_clusters_eleitores_resultado",
+        "ouro/municipal/contagem_colunas_clusters_eleitores_resultado",
         "ouro/brasil/clusters_eleitores_resultado",
         "ouro/estadual/clusters_eleitores_resultado",
         "ouro/municipal/clusters_eleitores_resultado",
@@ -195,6 +209,99 @@ def fmt_pct(value: Any) -> str:
     if pd.isna(num):
         return "0,0%"
     return f"{float(num) * 100:.1f}%".replace(".", ",")
+
+
+def choose_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
+    if df is None or df.empty:
+        return None
+    lower_map = {str(col).lower(): col for col in df.columns}
+    for candidate in candidates:
+        if candidate in df.columns:
+            return candidate
+        found = lower_map.get(candidate.lower())
+        if found is not None:
+            return str(found)
+    return None
+
+
+def unique_texts(df: pd.DataFrame, col: str | None, limit: int = 8) -> list[str]:
+    if df is None or df.empty or not col or col not in df.columns:
+        return []
+    out: list[str] = []
+    for value in df[col].tolist():
+        text = meaningful(value)
+        if text and text not in out:
+            out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def profile_title(row: pd.Series) -> str:
+    for col in ["perfil_combinado", "perfil_eleitor", "descricao_perfil", "valor_perfil"]:
+        if col in row and meaningful(row.get(col)):
+            return meaningful(row.get(col))
+    parts = []
+    for col in [
+        "perfil_faixa_etaria",
+        "perfil_genero",
+        "perfil_instrucao",
+        "perfil_estado_civil",
+        "perfil_raca_cor",
+        "genero",
+        "sexo",
+        "faixa_etaria",
+        "idade_faixa",
+        "grau_instrucao",
+        "escolaridade",
+        "estado_civil",
+        "raca_cor",
+    ]:
+        if col in row and meaningful(row.get(col)):
+            parts.append(meaningful(row.get(col)))
+    return " | ".join(parts) if parts else "Perfil eleitoral"
+
+
+def profile_chips(text: str, max_items: int = 5) -> list[str]:
+    raw = str(text or "").replace(";", "|").replace(",", "|").replace(" - ", "|")
+    chips: list[str] = []
+    for part in raw.split("|"):
+        clean = meaningful(part)
+        if not clean:
+            continue
+        if "=" in clean:
+            clean = clean.split("=", 1)[1].strip()
+        if "->" in clean:
+            clean = clean.split("->", 1)[-1].strip()
+        if clean and clean not in chips:
+            chips.append(clean)
+        if len(chips) >= max_items:
+            break
+    return chips
+
+
+def sort_by_numeric(df: pd.DataFrame, candidates: list[str], ascending: bool = False) -> pd.DataFrame:
+    col = choose_col(df, candidates)
+    if not col:
+        return df
+    work = df.copy()
+    work["_sort_value"] = pd.to_numeric(work[col], errors="coerce").fillna(0)
+    return work.sort_values("_sort_value", ascending=ascending).drop(columns=["_sort_value"], errors="ignore")
+
+
+def split_result_status_df(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if df is None or df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    work = df.copy()
+    if "resultado_eleitoral" in work.columns:
+        status = work["resultado_eleitoral"].astype(str).str.lower()
+        winners = work[status.str.contains("vencedor|eleito|ganhou", regex=True, na=False)].copy()
+        losers = work[~work.index.isin(winners.index)].copy()
+        return winners, losers
+    if "rank_entidade" in work.columns:
+        rank = pd.to_numeric(work["rank_entidade"], errors="coerce")
+        return work[rank == 1].copy(), work[rank != 1].copy()
+    return pd.DataFrame(), work
 
 
 def sql_meaningful(column: str) -> str:
@@ -369,6 +476,160 @@ class PdfReport:
             self.canvas.drawString(self.margin, self.y, line)
             self.y -= leading
 
+    def hero_panel(self, title: str, subtitle: str, kicker: str = "RELATORIO ELEITORAL") -> None:
+        panel_h = 96
+        self.ensure_space(panel_h + 18)
+        x = self.margin
+        y = self.y - panel_h
+        w = self.width - 2 * self.margin
+        self.canvas.setFillColor(colors.HexColor("#0f172a"))
+        self.canvas.roundRect(x, y, w, panel_h, 10, stroke=0, fill=1)
+        self.canvas.setFillColor(colors.HexColor("#0f766e"))
+        self.canvas.rect(x + w - 150, y, 150, panel_h, stroke=0, fill=1)
+        self.canvas.setFillColor(colors.HexColor("#22c55e"))
+        self.canvas.roundRect(x + 16, y + panel_h - 30, 104, 17, 7, stroke=0, fill=1)
+        self.canvas.setFillColor(colors.white)
+        self.canvas.setFont("Helvetica-Bold", 7)
+        self.canvas.drawString(x + 24, y + panel_h - 25, kicker[:28])
+        self.canvas.setFont("Helvetica-Bold", 27)
+        self.canvas.drawString(x + 18, y + 42, title[:32])
+        self.canvas.setFont("Helvetica", 10)
+        self.canvas.drawString(x + 20, y + 23, subtitle[:105])
+        self.canvas.setFillColor(colors.HexColor("#bbf7d0"))
+        self.canvas.setFont("Helvetica-Bold", 9)
+        self.canvas.drawRightString(x + w - 18, y + 21, "camada ouro")
+        self.y -= panel_h + 18
+
+    def insight_cards(self, items: list[tuple[str, str, str]], columns: int = 4) -> None:
+        if not items:
+            return
+        card_w = (self.width - 2 * self.margin - (columns - 1) * 10) / columns
+        card_h = 76
+        accent = ["#2563eb", "#0f766e", "#dc2626", "#7c3aed", "#ea580c", "#0891b2"]
+        for i, (title, value, caption) in enumerate(items):
+            if i % columns == 0:
+                self.ensure_space(card_h + 14)
+            col = i % columns
+            x = self.margin + col * (card_w + 10)
+            y = self.y - card_h
+            self.canvas.setFillColor(colors.HexColor("#ffffff"))
+            self.canvas.roundRect(x, y, card_w, card_h, 7, stroke=0, fill=1)
+            self.canvas.setStrokeColor(colors.HexColor("#dbeafe"))
+            self.canvas.roundRect(x, y, card_w, card_h, 7, stroke=1, fill=0)
+            self.canvas.setFillColor(colors.HexColor(accent[i % len(accent)]))
+            self.canvas.roundRect(x, y + card_h - 5, card_w, 5, 3, stroke=0, fill=1)
+            self.canvas.setFillColor(colors.HexColor("#475569"))
+            self.canvas.setFont("Helvetica-Bold", 7)
+            self.canvas.drawString(x + 10, y + card_h - 22, title[:28].upper())
+            self.canvas.setFillColor(colors.HexColor("#0f172a"))
+            self.canvas.setFont("Helvetica-Bold", 17)
+            self.canvas.drawString(x + 10, y + 30, str(value)[:19])
+            self.canvas.setFillColor(colors.HexColor("#64748b"))
+            self.canvas.setFont("Helvetica", 7)
+            self.canvas.drawString(x + 10, y + 14, str(caption)[:34])
+            if col == columns - 1 or i == len(items) - 1:
+                self.y -= card_h + 14
+
+    def chips(self, x: float, y: float, chips: list[str], max_width: float) -> float:
+        cx = x
+        cy = y
+        self.canvas.setFont("Helvetica-Bold", 6)
+        for idx, chip in enumerate(chips[:5]):
+            text = str(chip)[:18]
+            chip_w = min(max_width, max(34, 5.2 * len(text) + 14))
+            if cx + chip_w > x + max_width:
+                cx = x
+                cy -= 15
+            self.canvas.setFillColor(colors.HexColor(["#dbeafe", "#dcfce7", "#fee2e2", "#ede9fe", "#ffedd5"][idx % 5]))
+            self.canvas.roundRect(cx, cy - 8, chip_w, 12, 6, stroke=0, fill=1)
+            self.canvas.setFillColor(colors.HexColor("#0f172a"))
+            self.canvas.drawString(cx + 6, cy - 4, text)
+            cx += chip_w + 5
+        return cy
+
+    def profile_cards(self, title: str, df: pd.DataFrame, limit: int = 6) -> None:
+        self.ensure_space(40)
+        self.subheading(title)
+        if df is None or df.empty:
+            self.paragraph("Sem perfis processados para este recorte.")
+            return
+        work = sort_by_numeric(df, ["share_perfil", "share", "eleitorado", "peso"], ascending=False).head(limit)
+        cols = 2
+        gap = 12
+        card_w = (self.width - 2 * self.margin - gap) / cols
+        card_h = 106
+        for i, (_, row) in enumerate(work.iterrows()):
+            if i % cols == 0:
+                self.ensure_space(card_h + 12)
+            col = i % cols
+            x = self.margin + col * (card_w + gap)
+            y = self.y - card_h
+            accent = ["#2563eb", "#0f766e", "#7c3aed", "#ea580c", "#dc2626", "#0891b2"][i % 6]
+            self.canvas.setFillColor(colors.HexColor("#ffffff"))
+            self.canvas.roundRect(x, y, card_w, card_h, 8, stroke=0, fill=1)
+            self.canvas.setStrokeColor(colors.HexColor("#d1d5db"))
+            self.canvas.roundRect(x, y, card_w, card_h, 8, stroke=1, fill=0)
+            self.canvas.setFillColor(colors.HexColor(accent))
+            self.canvas.circle(x + 18, y + card_h - 21, 11, stroke=0, fill=1)
+            self.canvas.setFillColor(colors.white)
+            self.canvas.setFont("Helvetica-Bold", 9)
+            self.canvas.drawCentredString(x + 18, y + card_h - 24, str(i + 1))
+            label = profile_title(row)
+            share_col = choose_col(pd.DataFrame([row]), ["share_perfil", "share", "share_eleitorado_ano", "share_perfil_na_entidade"])
+            weight_col = choose_col(pd.DataFrame([row]), ["eleitorado", "peso", "votos_proxy", "votos"])
+            self.canvas.setFillColor(colors.HexColor("#0f172a"))
+            self.canvas.setFont("Helvetica-Bold", 10)
+            self.canvas.drawString(x + 36, y + card_h - 18, f"Perfil {i + 1}")
+            self.canvas.setFont("Helvetica", 7)
+            wrapped = textwrap.wrap(label, width=42)
+            yy = y + card_h - 35
+            for line in wrapped[:2]:
+                self.canvas.drawString(x + 12, yy, line)
+                yy -= 10
+            self.chips(x + 12, yy - 2, profile_chips(label), card_w - 24)
+            self.canvas.setFillColor(colors.HexColor("#475569"))
+            self.canvas.setFont("Helvetica-Bold", 7)
+            share_text = fmt_pct(row.get(share_col)) if share_col else "-"
+            peso_text = fmt_int(row.get(weight_col)) if weight_col else "-"
+            self.canvas.drawString(x + 12, y + 13, f"Participacao: {share_text} | Base: {peso_text}")
+            if col == cols - 1 or i == len(work) - 1:
+                self.y -= card_h + 12
+
+    def donut(self, title: str, rows: list[tuple[str, float, str]], max_rows: int = 8) -> None:
+        rows = [(label, float(value or 0), suffix) for label, value, suffix in rows if meaningful(label) and float(value or 0) > 0][:max_rows]
+        if not rows:
+            self.paragraph(f"{title}: sem dados para grafico.")
+            return
+        self.ensure_space(190, title)
+        self.subheading(title)
+        total = sum(value for _, value, _ in rows) or 1
+        cx = self.margin + 82
+        cy = self.y - 76
+        radius = 60
+        start = 90
+        for idx, (_, value, _) in enumerate(rows):
+            extent = 360 * value / total
+            self.canvas.setFillColor(self.palette[idx % len(self.palette)])
+            self.canvas.wedge(cx - radius, cy - radius, cx + radius, cy + radius, start, extent, stroke=0, fill=1)
+            start += extent
+        self.canvas.setFillColor(colors.white)
+        self.canvas.circle(cx, cy, 32, stroke=0, fill=1)
+        self.canvas.setFillColor(colors.HexColor("#0f172a"))
+        self.canvas.setFont("Helvetica-Bold", 11)
+        self.canvas.drawCentredString(cx, cy + 2, "Top")
+        self.canvas.setFont("Helvetica", 8)
+        self.canvas.drawCentredString(cx, cy - 12, str(len(rows)))
+        lx = self.margin + 175
+        ly = self.y - 18
+        self.canvas.setFont("Helvetica", 8)
+        for idx, (label, _, suffix) in enumerate(rows):
+            y = ly - idx * 16
+            self.canvas.setFillColor(self.palette[idx % len(self.palette)])
+            self.canvas.rect(lx, y - 7, 9, 9, stroke=0, fill=1)
+            self.canvas.setFillColor(colors.HexColor("#0f172a"))
+            self.canvas.drawString(lx + 15, y - 5, f"{label[:44]}  {suffix}")
+        self.y -= 162
+
     def cards(self, items: list[tuple[str, str]], columns: int = 3) -> None:
         if not items:
             return
@@ -479,6 +740,134 @@ def polars_to_pandas(data: Any) -> pd.DataFrame:
     return pd.DataFrame(polars_records(data))
 
 
+def read_parquet_file_small(path: Path, limit: int) -> pd.DataFrame:
+    if pl is not None:
+        frame = pl.scan_parquet(str(path), hive_partitioning=False).limit(max(1, int(limit))).collect(engine="streaming")
+        return pd.DataFrame(frame.to_dicts())
+    return pd.read_parquet(path).head(limit)
+
+
+def read_small_parquet(path: Path, limit: int = 50) -> pd.DataFrame:
+    """Le um Parquet pequeno da camada ouro, inclusive quando o arquivo nao tem extensao."""
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        if path.is_dir():
+            files = sorted(path.rglob("*.parquet"))
+            frames: list[pd.DataFrame] = []
+            remaining = max(1, int(limit))
+            for file in files:
+                if remaining <= 0:
+                    break
+                frame = read_parquet_file_small(file, remaining)
+                if not frame.empty:
+                    frames.append(frame.head(remaining))
+                    remaining -= len(frames[-1])
+            return pd.concat(frames, ignore_index=True).head(limit) if frames else pd.DataFrame()
+        return read_parquet_file_small(path, limit)
+    except Exception as exc:
+        return pd.DataFrame({"erro": [str(exc)], "arquivo": [str(path)]})
+
+
+def read_ouro_brasil(run: Path, name: str, limit: int = 50) -> pd.DataFrame:
+    return read_small_parquet(run / "ouro" / "brasil" / name, limit=limit)
+
+
+def read_ouro_level(run: Path, level: str, name: str, limit: int = 500, uf: str = "", municipio: str = "") -> pd.DataFrame:
+    path = run / "ouro" / level / name
+    if not path.exists():
+        return pd.DataFrame()
+    if pl is not None:
+        try:
+            lf = pl.scan_parquet(str(path / "**" / "*.parquet"), hive_partitioning=True)
+            if uf and "uf" in lf.collect_schema().names():
+                lf = lf.filter(pl.col("uf").cast(pl.Utf8) == str(uf).upper())
+            if municipio and "cd_municipio" in lf.collect_schema().names():
+                lf = lf.filter(pl.col("cd_municipio").cast(pl.Utf8) == str(municipio))
+            frame = lf.limit(max(1, int(limit))).collect(engine="streaming")
+            return pd.DataFrame(frame.to_dicts())
+        except Exception:
+            pass
+    df = read_small_parquet(path, limit=max(limit, 1000))
+    if uf and "uf" in df.columns:
+        df = df[df["uf"].astype(str).str.upper() == str(uf).upper()]
+    if municipio and "cd_municipio" in df.columns:
+        df = df[df["cd_municipio"].astype(str) == str(municipio)]
+    return df.head(limit)
+
+
+def add_histogram_table_section(pdf: PdfReport, title: str, df: pd.DataFrame, top_n: int, value_col: str = "qtd_pessoas") -> None:
+    if df is None or df.empty or "dimensao_perfil" not in df.columns or "valor_perfil" not in df.columns:
+        return
+    if value_col not in df.columns:
+        value_col = "qtd_votos" if "qtd_votos" in df.columns else ""
+    if not value_col:
+        return
+    work = df.copy()
+    work[value_col] = pd.to_numeric(work[value_col], errors="coerce").fillna(0)
+    work = work[(work[value_col] > 0) & (work["valor_perfil"].astype(str).str.strip() != "")]
+    if work.empty:
+        return
+    pdf.new_page(title)
+    for dim in ["perfil_combinado", "faixa_etaria", "sexo_genero", "escolaridade", "estado_civil", "raca_cor"]:
+        sub = work[work["dimensao_perfil"].astype(str) == dim].copy()
+        if sub.empty:
+            continue
+        sub = sub.groupby("valor_perfil", as_index=False)[value_col].sum()
+        sub = sort_by_numeric(sub, [value_col], ascending=False).head(top_n)
+        rows = [(str(row.get("valor_perfil", "")), pd.to_numeric(row.get(value_col), errors="coerce"), fmt_int(row.get(value_col))) for _, row in sub.iterrows()]
+        if not rows:
+            continue
+        pdf.hbar(f"{title} - {dim}", rows, max_rows=min(top_n, 14))
+
+
+def add_party_result_section(pdf: PdfReport, title: str, df: pd.DataFrame, top_n: int) -> None:
+    if df is None or df.empty:
+        pdf.paragraph(f"{title}: sem dados processados.")
+        return
+    should_split = "quem ganhou" not in title.lower() and "quem nao ganhou" not in title.lower()
+    winners, losers = split_result_status_df(df) if should_split else (pd.DataFrame(), pd.DataFrame())
+    if should_split and not winners.empty:
+        add_party_result_section(pdf, f"{title} - quem ganhou", winners, top_n)
+        if not losers.empty:
+            add_party_result_section(pdf, f"{title} - quem nao ganhou", losers, min(top_n, 12))
+        return
+    label_col = choose_col(df, ["partido", "sg_partido", "sigla_partido", "entidade", "partido_vencedor", "nm_partido", "nr_partido"])
+    value_col = choose_col(df, ["share_votos", "share_pred_2026", "votos", "votos_total"])
+    if not label_col:
+        pdf.paragraph(f"{title}: a tabela existe, mas nao tem coluna de partido/entidade identificavel.")
+        return
+    if not value_col:
+        pdf.paragraph(f"{title}: a tabela existe, mas nao tem coluna numerica de votos/share identificavel.")
+        return
+    work = sort_by_numeric(df, [value_col], ascending=False).head(top_n)
+    rows = []
+    for _, row in work.iterrows():
+        value = pd.to_numeric(row.get(value_col), errors="coerce")
+        label_value = fmt_pct(value) if "share" in value_col else fmt_int(value)
+        rows.append((str(row.get(label_col, "")), value, label_value))
+    pdf.donut(f"{title} - distribuicao", rows, max_rows=min(top_n, 8))
+    pdf.hbar(title, rows, max_rows=top_n)
+
+
+def add_profile_result_section(pdf: PdfReport, title: str, df: pd.DataFrame, top_n: int) -> None:
+    if df is None or df.empty:
+        pdf.paragraph(f"{title}: sem perfis processados.")
+        return
+    label_col = choose_col(df, ["perfil_combinado", "perfil_eleitor", "valor_perfil", "descricao_perfil"])
+    value_col = choose_col(df, ["histograma_qtd_pessoas", "qtd_eleitores_perfil", "eleitorado", "peso", "share_perfil", "share", "share_eleitorado_ano"])
+    if not label_col or not value_col:
+        return
+    work = sort_by_numeric(df, [value_col], ascending=False).head(top_n)
+    rows = []
+    for _, row in work.iterrows():
+        value = pd.to_numeric(row.get(value_col), errors="coerce")
+        suffix = fmt_pct(value) if "share" in value_col else fmt_int(value)
+        rows.append((profile_title(row), value, suffix))
+    pdf.donut(f"{title} - grupos principais", rows, max_rows=min(top_n, 8))
+    pdf.hbar(title, rows, max_rows=min(top_n, 10))
+
+
 def add_polars_party_section(pdf: PdfReport, title: str, data: Any, top_n: int) -> None:
     df = polars_to_pandas(data)
     pdf.table(title, df, ["partido", "share_pred_2026", "votos_pred_2026", "perfil_eleitor_2026"], limit=top_n)
@@ -511,6 +900,300 @@ def add_polars_cluster_section(pdf: PdfReport, title: str, data: Any, top_n: int
         for _, r in df.head(top_n).iterrows()
     ]
     pdf.hbar(title, rows, max_rows=top_n)
+
+
+def selected_ufs_polars(store: Any, args: argparse.Namespace, progress: dict[str, Any] | None = None) -> list[str]:
+    if str(getattr(args, "ufs", "") or "").strip():
+        return [x.strip().upper() for x in str(args.ufs).split(",") if x.strip()]
+    progress = progress or {}
+    ufs = [str(x).upper() for x in (progress.get("ufs_concluidas") or []) if str(x).strip()]
+    if ufs:
+        return [uf for uf in ufs if uf not in {"BR", "ZZ", "SEM_UF"}]
+    try:
+        metrics = store.metrics_by_year("timeline_uf")
+        if getattr(metrics, "height", 0) and "uf" in metrics.columns:
+            return [str(x).upper() for x in metrics.select("uf").unique().sort("uf").to_series().to_list() if str(x).strip()]
+    except Exception:
+        return []
+    return []
+
+
+def add_polars_common_intro(pdf: PdfReport, run: Path, modalidade: str, logger: PdfRunLogger) -> None:
+    add_cover(pdf, run)
+    add_methodology(pdf)
+    add_graph_generation_methodology(pdf, logger)
+    pdf.new_page("Arquitetura de consulta")
+    pdf.paragraph(
+        "Este PDF foi gerado com Polars LazyFrame como engine principal. "
+        "Os Parquets sao escaneados de forma preguiçosa, com filtros por ano, UF e municipio aplicados antes do collect."
+    )
+    pdf.cards(
+        [
+            ("Engine", "Polars LazyFrame"),
+            ("Modalidade", MODE_LABELS.get(modalidade, modalidade)),
+            ("Baixo nivel", "PyArrow/Parquet"),
+            ("Fallback", "DuckDB"),
+        ],
+        columns=2,
+    )
+    pdf.paragraph("Recursos ativos nesta modalidade: " + ", ".join(modalidade_info(modalidade).get("features", [])))
+
+
+def add_polars_progress_page(pdf: PdfReport, progress: dict[str, Any]) -> None:
+    pdf.new_page("Progresso da camada ouro")
+    pdf.cards(
+        [
+            ("Fatias totais", fmt_int(progress.get("total"))),
+            ("Concluidas", fmt_int(progress.get("concluidas"))),
+            ("Pendentes", fmt_int(progress.get("pendentes"))),
+            ("UFs pendentes", fmt_int(len(progress.get("ufs_pendentes") or []))),
+        ],
+        columns=2,
+    )
+    pdf.paragraph("UFs pendentes: " + ", ".join(progress.get("ufs_pendentes") or []) if progress.get("ufs_pendentes") else "Sem pendencias registradas no manifesto.")
+
+
+def add_polars_brasil_pages(pdf: PdfReport, store: Any, args: argparse.Namespace, modalidade: str) -> None:
+    pdf.new_page("")
+    logger = getattr(pdf, "logger", None)
+    run_path = Path(getattr(store, "run_path", getattr(args, "run", "."))).expanduser()
+    pdf.hero_panel(
+        "Brasil",
+        "Perfil eleitoral nacional, partidos e leitura executiva gerados direto dos Parquets da camada ouro.",
+        "DASHBOARD NACIONAL",
+    )
+    if logger:
+        logger.event("consulta_direta", "inicio", nivel="brasil", tabela="ouro/brasil/resumo")
+    resumo = read_ouro_brasil(run_path, "resumo", limit=max(args.top_n, 10000))
+    if logger:
+        logger.event("consulta_direta", "fim", nivel="brasil", tabela="ouro/brasil/resumo", linhas=len(resumo))
+    anos = unique_texts(resumo, choose_col(resumo, ["ano"]), limit=8)
+    eleitorado_col = choose_col(resumo, ["eleitorado", "eleitorado_total", "qtd_eleitores"])
+    eleitorado_val = pd.to_numeric(resumo[eleitorado_col], errors="coerce").max() if eleitorado_col else 0
+    partidos_preview = pd.DataFrame()
+    if modalidade_allows(modalidade, "partido"):
+        if logger:
+            logger.event("consulta_direta", "inicio", nivel="brasil", tabela="ouro/brasil/resultado_partido")
+        partidos_preview = read_ouro_brasil(run_path, "resultado_partido", limit=max(args.top_n, 10000))
+        if logger:
+            logger.event("consulta_direta", "fim", nivel="brasil", tabela="ouro/brasil/resultado_partido", linhas=len(partidos_preview))
+    perfis_preview = pd.DataFrame()
+    hist_perfis = pd.DataFrame()
+    hist_partidos = pd.DataFrame()
+    if modalidade_allows(modalidade, "perfil"):
+        if logger:
+            logger.event("consulta_direta", "inicio", nivel="brasil", tabela="ouro/brasil/perfil_eleitor")
+        perfis_preview = read_ouro_brasil(run_path, "perfil_eleitor", limit=max(args.top_n, 10000))
+        hist_perfis = read_ouro_brasil(run_path, "contagem_colunas_perfil_eleitor", limit=max(args.top_n * 20, 1000))
+        if logger:
+            logger.event("consulta_direta", "fim", nivel="brasil", tabela="ouro/brasil/perfil_eleitor", linhas=len(perfis_preview))
+    if modalidade_allows(modalidade, "partido"):
+        hist_partidos = read_ouro_brasil(run_path, "contagem_colunas_perfil_partido", limit=max(args.top_n * 20, 1000))
+    party_label_col = choose_col(partidos_preview, ["partido", "sg_partido", "sigla_partido", "entidade", "partido_vencedor", "nm_partido", "nr_partido"])
+    top_party = "-"
+    if party_label_col and not partidos_preview.empty:
+        winners_preview, _ = split_result_status_df(partidos_preview)
+        party_source = winners_preview if not winners_preview.empty else partidos_preview
+        sorted_party = sort_by_numeric(party_source, ["share_votos", "share_pred_2026", "votos", "votos_total"], ascending=False)
+        top_party = meaningful(sorted_party.iloc[0].get(party_label_col)) if not sorted_party.empty else "-"
+    profile_label = "-"
+    if not perfis_preview.empty:
+        sorted_profiles = sort_by_numeric(perfis_preview, ["share_perfil", "share", "eleitorado", "peso"], ascending=False)
+        profile_label = profile_title(sorted_profiles.iloc[0]) if not sorted_profiles.empty else "-"
+    pdf.insight_cards(
+        [
+            ("Anos", ", ".join(anos) if anos else "-"),
+            ("Eleitorado base", fmt_int(eleitorado_val)),
+            ("Perfil dominante", profile_label[:22]),
+            ("Partido destaque", top_party[:22]),
+        ],
+        columns=4,
+    )
+    pdf.paragraph(
+        "Leitura rapida: os blocos abaixo mostram primeiro quem e o eleitor predominante no Brasil "
+        "e depois como os votos por partido aparecem na camada ouro ja processada.",
+        size=9,
+        width_chars=102,
+    )
+    if modalidade_allows(modalidade, "perfil"):
+        pdf.profile_cards("Quem e o eleitor medio no Brasil", perfis_preview, limit=min(args.top_n, 6))
+        if not hist_perfis.empty:
+            add_histogram_table_section(pdf, "Histogramas do eleitor no Brasil", hist_perfis, min(args.top_n, 14), "qtd_pessoas")
+        else:
+            add_profile_result_section(pdf, "Perfis mais fortes no Brasil", perfis_preview, min(args.top_n, 10))
+    if modalidade_allows(modalidade, "partido"):
+        pdf.paragraph("Fonte dos partidos: ouro/brasil/resultado_partido.", size=8)
+        add_party_result_section(pdf, "Brasil por partido", partidos_preview, min(args.top_n, 12))
+        add_histogram_table_section(pdf, "Perfil do eleitor por partido - Brasil", hist_partidos, min(args.top_n, 14), "qtd_votos")
+    if modalidade_allows(modalidade, "candidato"):
+        pdf.table("Resultado por candidato - Brasil", polars_to_pandas(store.entity_results(entity="candidato", nivel="brasil", limit=args.top_n)), ["ano", "entidade", "votos", "share_votos", "rank_entidade"], limit=args.top_n)
+        pdf.table("Perfil por candidato - Brasil", polars_to_pandas(store.entity_profiles(entity="candidato", nivel="brasil", limit=args.top_n)), ["ano", "entidade", "perfil_combinado", "share_perfil_na_entidade"], limit=args.top_n)
+    if modalidade_allows(modalidade, "cluster"):
+        add_polars_cluster_section(pdf, "Clusters Brasil - eleitorado", store.cluster_personas(tipo="eleitores", nivel="brasil", limit=args.top_n), args.top_n)
+        add_polars_cluster_section(pdf, "Clusters Brasil - eleitorado + partido", store.cluster_personas(tipo="resultado", nivel="brasil", limit=args.top_n), args.top_n)
+
+
+def add_polars_state_pages(pdf: PdfReport, store: Any, args: argparse.Namespace, modalidade: str, uf: str) -> None:
+    pdf.new_page("")
+    pdf.hero_panel(
+        f"Estado {uf}",
+        "Resumo estadual com perfil dominante do eleitor e distribuicao partidaria da camada ouro.",
+        "DASHBOARD ESTADUAL",
+    )
+    logger = getattr(pdf, "logger", None)
+    if logger:
+        logger.event("consulta_polars", "inicio", nivel="estado", uf=uf, tabela="ouro/estadual/resumo")
+    metrics = polars_to_pandas(store.metrics_by_year("timeline_uf", uf=uf))
+    if logger:
+        logger.event("consulta_polars", "fim", nivel="estado", uf=uf, tabela="ouro/estadual/resumo", linhas=len(metrics))
+    anos = unique_texts(metrics, choose_col(metrics, ["ano"]), limit=6)
+    eleitorado_col = choose_col(metrics, ["eleitorado", "eleitorado_total", "qtd_eleitores"])
+    eleitorado_val = pd.to_numeric(metrics[eleitorado_col], errors="coerce").max() if eleitorado_col else 0
+    state_parties = pd.DataFrame()
+    state_profiles = pd.DataFrame()
+    state_hist_profiles = pd.DataFrame()
+    state_hist_parties = pd.DataFrame()
+    if modalidade_allows(modalidade, "partido"):
+        if logger:
+            logger.event("consulta_polars", "inicio", nivel="estado", uf=uf, tabela="ouro/estadual/resultado_partido")
+        state_parties = store.quick_party_results(nivel="estado", uf=uf, limit=args.top_n)
+        if logger:
+            logger.event("consulta_polars", "fim", nivel="estado", uf=uf, tabela="ouro/estadual/resultado_partido", linhas=getattr(state_parties, "height", 0))
+    if modalidade_allows(modalidade, "perfil"):
+        if logger:
+            logger.event("consulta_polars", "inicio", nivel="estado", uf=uf, tabela="ouro/estadual/perfil_eleitor")
+        state_profiles = polars_to_pandas(store.top_profiles("estado", uf=uf, limit=args.top_n))
+        state_hist_profiles = read_ouro_level(Path(getattr(store, "run_path", getattr(args, "run", "."))).expanduser(), "estadual", "contagem_colunas_perfil_eleitor", limit=max(args.top_n * 20, 1000), uf=uf)
+        if logger:
+            logger.event("consulta_polars", "fim", nivel="estado", uf=uf, tabela="ouro/estadual/perfil_eleitor", linhas=len(state_profiles))
+    if modalidade_allows(modalidade, "partido"):
+        state_hist_parties = read_ouro_level(Path(getattr(store, "run_path", getattr(args, "run", "."))).expanduser(), "estadual", "contagem_colunas_perfil_partido", limit=max(args.top_n * 20, 1000), uf=uf)
+    party_df = polars_to_pandas(state_parties) if hasattr(state_parties, "to_dicts") else state_parties
+    party_label_col = choose_col(party_df, ["partido", "sg_partido", "sigla_partido", "entidade", "partido_vencedor", "nm_partido", "nr_partido"])
+    top_party = "-"
+    if party_label_col and not party_df.empty:
+        sorted_party = sort_by_numeric(party_df, ["share_votos", "share_pred_2026", "votos", "votos_total"], ascending=False)
+        top_party = meaningful(sorted_party.iloc[0].get(party_label_col)) if not sorted_party.empty else "-"
+    profile_label = "-"
+    if not state_profiles.empty:
+        sorted_profiles = sort_by_numeric(state_profiles, ["share_perfil", "share", "eleitorado", "peso"], ascending=False)
+        profile_label = profile_title(sorted_profiles.iloc[0]) if not sorted_profiles.empty else "-"
+    pdf.insight_cards(
+        [
+            ("Anos", ", ".join(anos) if anos else "-"),
+            ("Eleitorado base", fmt_int(eleitorado_val)),
+            ("Perfil dominante", profile_label[:22]),
+            ("Partido destaque", top_party[:22]),
+        ],
+        columns=4,
+    )
+    if modalidade_allows(modalidade, "perfil"):
+        pdf.profile_cards(f"Quem e o eleitor medio em {uf}", state_profiles, limit=min(args.top_n, 6))
+        if not state_hist_profiles.empty:
+            add_histogram_table_section(pdf, f"Histogramas do eleitor em {uf}", state_hist_profiles, min(args.top_n, 14), "qtd_pessoas")
+        else:
+            add_profile_result_section(pdf, f"Perfis mais fortes em {uf}", state_profiles, min(args.top_n, 10))
+    if modalidade_allows(modalidade, "partido"):
+        pdf.paragraph(f"Fonte dos partidos em {uf}: ouro/estadual/resultado_partido.", size=8)
+        add_party_result_section(pdf, f"{uf} por partido", party_df, min(args.top_n, 12))
+        add_histogram_table_section(pdf, f"Perfil do eleitor por partido - {uf}", state_hist_parties, min(args.top_n, 14), "qtd_votos")
+    if modalidade_allows(modalidade, "candidato"):
+        pdf.table(f"Resultado por candidato - {uf}", polars_to_pandas(store.entity_results(entity="candidato", nivel="estado", uf=uf, limit=args.top_n)), ["ano", "entidade", "votos", "share_votos", "rank_entidade"], limit=args.top_n)
+        pdf.table(f"Perfil por candidato - {uf}", polars_to_pandas(store.entity_profiles(entity="candidato", nivel="estado", uf=uf, limit=args.top_n)), ["ano", "entidade", "perfil_combinado", "share_perfil_na_entidade"], limit=args.top_n)
+    if modalidade_allows(modalidade, "cluster"):
+        add_polars_cluster_section(pdf, f"Clusters {uf} - eleitorado", store.cluster_personas(tipo="eleitores", nivel="estado", uf=uf, limit=args.top_n), args.top_n)
+        add_polars_cluster_section(pdf, f"Clusters {uf} - eleitorado + partido", store.cluster_personas(tipo="resultado", nivel="estado", uf=uf, limit=args.top_n), args.top_n)
+
+
+def add_polars_municipality_pages(pdf: PdfReport, store: Any, args: argparse.Namespace, modalidade: str, uf: str, municipio: dict[str, str]) -> None:
+    label = municipio.get("label", "")
+    value = municipio.get("value", "")
+    pdf.new_page(f"Municipio {label} - {uf}")
+    if modalidade_allows(modalidade, "partido"):
+        mun_parties = store.party_prediction("sim_partidos_municipios", uf=uf, municipio=value, cenario="base", limit=args.top_n)
+        mun_source = "simulacao_2026"
+        if getattr(mun_parties, "height", 0) == 0:
+            mun_parties = store.historical_party_results(uf=uf, municipio=value, limit=args.top_n)
+            mun_source = "historico_processado"
+        pdf.paragraph(f"Fonte dos partidos em {label}: {mun_source}.")
+        add_polars_party_section(pdf, f"{label} por partido", mun_parties, args.top_n)
+    if modalidade_allows(modalidade, "perfil"):
+        mun_profiles = polars_to_pandas(store.top_profiles("municipio", uf=uf, municipio=value, limit=args.top_n))
+        pdf.table(f"Top perfis {label}", mun_profiles, ["ano", "perfil_combinado", "share_perfil", "eleitorado"], limit=args.top_n)
+    if modalidade_allows(modalidade, "candidato"):
+        pdf.table(f"Resultado por candidato - {label}", polars_to_pandas(store.entity_results(entity="candidato", nivel="municipio", uf=uf, municipio=value, limit=args.top_n)), ["ano", "entidade", "votos", "share_votos", "rank_entidade"], limit=args.top_n)
+        pdf.table(f"Perfil por candidato - {label}", polars_to_pandas(store.entity_profiles(entity="candidato", nivel="municipio", uf=uf, municipio=value, limit=args.top_n)), ["ano", "entidade", "perfil_combinado", "share_perfil_na_entidade"], limit=args.top_n)
+    if modalidade_allows(modalidade, "cluster"):
+        add_polars_cluster_section(pdf, f"Clusters {label} - eleitorado", store.cluster_personas(tipo="eleitores", nivel="municipio", uf=uf, municipio=value, limit=args.top_n), args.top_n)
+        add_polars_cluster_section(pdf, f"Clusters {label} - eleitorado + partido", store.cluster_personas(tipo="resultado", nivel="municipio", uf=uf, municipio=value, limit=args.top_n), args.top_n)
+
+
+def safe_pdf_name(text: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() else "_" for ch in str(text).strip().lower())
+    while "__" in cleaned:
+        cleaned = cleaned.replace("__", "_")
+    return cleaned.strip("_") or "sem_nome"
+
+
+def build_report_polars_split(args: argparse.Namespace, run: Path, out: Path) -> Path:
+    modalidade = normalize_modalidade(getattr(args, "modalidade_analise", "completa"))
+    out_dir = out if out.suffix.lower() != ".pdf" else out.with_suffix("")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    store = PolarsStore(run)  # type: ignore[misc]
+    progress = store.ouro_resultados_summary()
+    generated: list[str] = []
+
+    brasil_out = out_dir / "00_brasil.pdf"
+    logger = PdfRunLogger(brasil_out, verbose=not args.quiet, log_dir=Path(args.log_dir).expanduser() if args.log_dir else None)
+    logger.event("relatorio_split", "inicio_brasil", saida=str(brasil_out), modalidade=modalidade)
+    pdf = PdfReport(brasil_out, f"Relatorio Brasil - {MODE_LABELS.get(modalidade, modalidade)}", max_pages=args.max_pages, logger=logger)
+    try:
+        add_polars_common_intro(pdf, run, modalidade, logger)
+        add_polars_progress_page(pdf, progress)
+        add_polars_brasil_pages(pdf, store, args, modalidade)
+        pdf.new_page("Notas finais")
+        pdf.paragraph("Este arquivo foi gerado primeiro no modo separado por nivel: Brasil -> estados -> municipios.")
+    finally:
+        pdf.close()
+    generated.append(str(brasil_out))
+
+    ufs = selected_ufs_polars(store, args, progress)
+    for idx, uf in enumerate(ufs, start=1):
+        state_out = out_dir / f"{idx:02d}_estado_{safe_pdf_name(uf)}.pdf"
+        logger = PdfRunLogger(state_out, verbose=not args.quiet, log_dir=Path(args.log_dir).expanduser() if args.log_dir else None)
+        logger.event("relatorio_split", "inicio_estado", uf=uf, saida=str(state_out), modalidade=modalidade)
+        pdf = PdfReport(state_out, f"Relatorio Estado {uf} - {MODE_LABELS.get(modalidade, modalidade)}", max_pages=args.max_pages, logger=logger)
+        try:
+            add_polars_common_intro(pdf, run, modalidade, logger)
+            add_polars_state_pages(pdf, store, args, modalidade, uf)
+            pdf.new_page("Notas finais")
+            pdf.paragraph(f"Relatorio estadual gerado a partir da camada ouro para {uf}.")
+        finally:
+            pdf.close()
+        generated.append(str(state_out))
+
+        if modalidade_allows(modalidade, "municipio") and int(args.municipios_por_uf or 0) > 0:
+            municipios = store.municipios(uf)[: int(args.municipios_por_uf or 0)]
+            for mun_idx, municipio in enumerate(municipios, start=1):
+                value = municipio.get("value", "")
+                label = municipio.get("label", "")
+                cd = value.split("|", 1)[0] if "|" in value else safe_pdf_name(label)
+                mun_out = out_dir / f"{idx:02d}_{mun_idx:03d}_municipio_{safe_pdf_name(uf)}_{safe_pdf_name(cd)}.pdf"
+                logger = PdfRunLogger(mun_out, verbose=not args.quiet, log_dir=Path(args.log_dir).expanduser() if args.log_dir else None)
+                logger.event("relatorio_split", "inicio_municipio", uf=uf, municipio=label, saida=str(mun_out), modalidade=modalidade)
+                pdf = PdfReport(mun_out, f"Relatorio Municipio {label} - {MODE_LABELS.get(modalidade, modalidade)}", max_pages=args.max_pages, logger=logger)
+                try:
+                    add_polars_common_intro(pdf, run, modalidade, logger)
+                    add_polars_municipality_pages(pdf, store, args, modalidade, uf, municipio)
+                    pdf.new_page("Notas finais")
+                    pdf.paragraph(f"Relatorio municipal gerado a partir da camada ouro para {label} - {uf}.")
+                finally:
+                    pdf.close()
+                generated.append(str(mun_out))
+
+    manifest = out_dir / "manifesto_pdfs.json"
+    manifest.write_text(json.dumps({"modalidade": modalidade, "ordem": "brasil_estado_municipio", "arquivos": generated}, ensure_ascii=False, indent=2), encoding="utf-8")
+    return out_dir
 
 
 def build_report_polars(args: argparse.Namespace, run: Path, out: Path) -> Path:
@@ -647,6 +1330,8 @@ def build_report(args: argparse.Namespace) -> Path:
         out = (Path.cwd() / out).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     if getattr(args, "query_engine", "polars") == "polars" and polars_available():
+        if getattr(args, "pdf_separado_por_nivel", False):
+            return build_report_polars_split(args, run, out)
         return build_report_polars(args, run, out)
 
     log_dir = Path(args.log_dir).expanduser() if args.log_dir else None
@@ -1006,6 +1691,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--duckdb-threads", type=int, default=4, help="Threads DuckDB usadas nas consultas do relatorio.")
     parser.add_argument("--query-engine", choices=["polars", "duckdb"], default="polars", help="Engine de consulta do PDF. Padrao: polars; duckdb fica como fallback legado.")
     parser.add_argument("--log-dir", default="", help="Pasta para logs detalhados do PDF. Padrao: <saida_pdf>/logs.")
+    parser.add_argument("--pdf-separado-por-nivel", action="store_true", help="Gera PDFs separados: primeiro Brasil, depois um por estado e, se aplicavel, um por municipio.")
     parser.add_argument("--quiet", action="store_true", help="Reduz logs no terminal, mantendo arquivos de log.")
     return parser.parse_args()
 

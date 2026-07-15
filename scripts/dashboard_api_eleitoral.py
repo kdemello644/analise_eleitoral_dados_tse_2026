@@ -19,6 +19,11 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+try:
+    import polars as pl
+except ModuleNotFoundError:  # pragma: no cover
+    pl = None  # type: ignore[assignment]
+
 from dashboard_dash_eleitoral import (
     DuckStore,
     df_records,
@@ -58,6 +63,7 @@ class PdfJobRequest(BaseModel):
     secoes_por_uf: int = Field(default=30, ge=0, le=1000)
     duckdb_threads: int = Field(default=2, ge=1, le=32)
     engine: str = Field(default="polars", pattern="^(polars|duckdb)$")
+    separado_por_nivel: bool = False
     quiet: bool = False
 
 
@@ -157,6 +163,37 @@ def call_table(store: Any, key: str, limit: int) -> Any:
     return table_query(store, key, limit=limit)
 
 
+def read_parquet_file_small(path: Path, limit: int) -> pd.DataFrame:
+    if pl is not None:
+        frame = pl.scan_parquet(str(path), hive_partitioning=False).limit(max(1, int(limit))).collect(engine="streaming")
+        return pd.DataFrame(frame.to_dicts())
+    return pd.read_parquet(path).head(limit)
+
+
+def read_small_parquet(path: Path, limit: int = 50) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        if path.is_dir():
+            frames: list[pd.DataFrame] = []
+            remaining = max(1, int(limit))
+            for file in sorted(path.rglob("*.parquet")):
+                if remaining <= 0:
+                    break
+                frame = read_parquet_file_small(file, remaining)
+                if not frame.empty:
+                    frames.append(frame.head(remaining))
+                    remaining -= len(frames[-1])
+            return pd.concat(frames, ignore_index=True).head(limit) if frames else pd.DataFrame()
+        return read_parquet_file_small(path, limit)
+    except Exception as exc:
+        return pd.DataFrame({"erro": [str(exc)], "arquivo": [str(path)]})
+
+
+def read_ouro_brasil(run_path: Path, name: str, limit: int = 50) -> pd.DataFrame:
+    return read_small_parquet(run_path / "ouro" / "brasil" / name, limit=limit)
+
+
 def call_state_party_map(store: Any, **kwargs: Any) -> Any:
     if hasattr(store, "state_party_map"):
         return store.state_party_map(**kwargs)
@@ -178,6 +215,12 @@ def call_entity_results(store: Any, **kwargs: Any) -> Any:
 def call_entity_profiles(store: Any, **kwargs: Any) -> Any:
     if hasattr(store, "entity_profiles"):
         return store.entity_profiles(**kwargs)
+    return pd.DataFrame()
+
+
+def call_quick_party_results(store: Any, **kwargs: Any) -> Any:
+    if hasattr(store, "quick_party_results"):
+        return store.quick_party_results(**kwargs)
     return pd.DataFrame()
 
 
@@ -433,6 +476,47 @@ def make_app(run_path: Path, engine: str = "polars") -> FastAPI:
                 "partidos": to_records(partidos),
             }
 
+    @app.get("/api/brasil/rapido")
+    def brasil_rapido(ano: str = "", modalidade: str = "estados_brasil", limit: int = Query(20, ge=1, le=200)) -> dict[str, Any]:
+        modalidade = normalize_modalidade(modalidade)
+        with state.store() as store:
+            partidos = call_quick_party_results(store, nivel="brasil", ano=ano or None, limit=limit) if modalidade_allows(modalidade, "partido") else pd.DataFrame()
+            perfis = call_top_profiles(store, "brasil", ano=ano or None, limit=min(limit, 10)) if modalidade_allows(modalidade, "perfil") else pd.DataFrame()
+            metricas = call_metrics_by_year(store, "timeline_nacional")
+            return {
+                "status": "ok",
+                "modalidade": modalidade_info(modalidade),
+                "fonte_partidos": "ouro_brasil_resultado_partido",
+                "partidos": to_records(partidos),
+                "perfis": to_records(perfis),
+                "metricas": to_records(metricas),
+            }
+
+    @app.get("/api/brasil/tabelas")
+    def brasil_tabelas(limit: int = Query(50, ge=1, le=500)) -> dict[str, Any]:
+        resumo = read_ouro_brasil(state.run_path, "resumo", limit=limit)
+        perfil = read_ouro_brasil(state.run_path, "perfil_eleitor", limit=limit)
+        resultado = read_ouro_brasil(state.run_path, "resultado_partido", limit=limit)
+        hist_perfil = read_ouro_brasil(state.run_path, "contagem_colunas_perfil_eleitor", limit=limit)
+        hist_partido = read_ouro_brasil(state.run_path, "contagem_colunas_perfil_partido", limit=limit)
+        hist_candidato = read_ouro_brasil(state.run_path, "contagem_colunas_perfil_candidato", limit=limit)
+        hist_clusters = read_ouro_brasil(state.run_path, "contagem_colunas_clusters_eleitores", limit=limit)
+        hist_clusters_resultado = read_ouro_brasil(state.run_path, "contagem_colunas_clusters_eleitores_resultado", limit=limit)
+        return {
+            "status": "ok",
+            "fonte": "ouro/brasil",
+            "tabelas": {
+                "resumo": to_records(resumo, limit=limit),
+                "perfil_eleitor": to_records(perfil, limit=limit),
+                "resultado_partido": to_records(resultado, limit=limit),
+                "contagem_colunas_perfil_eleitor": to_records(hist_perfil, limit=limit),
+                "contagem_colunas_perfil_partido": to_records(hist_partido, limit=limit),
+                "contagem_colunas_perfil_candidato": to_records(hist_candidato, limit=limit),
+                "contagem_colunas_clusters_eleitores": to_records(hist_clusters, limit=limit),
+                "contagem_colunas_clusters_eleitores_resultado": to_records(hist_clusters_resultado, limit=limit),
+            },
+        }
+
     @app.get("/api/perfis")
     def perfis(
         nivel: str = Query("brasil", pattern="^(brasil|estado|municipio)$"),
@@ -679,6 +763,7 @@ def make_app(run_path: Path, engine: str = "polars") -> FastAPI:
             "log_dir": str(log_dir),
             "engine": payload.engine,
             "modalidade_analise": normalize_modalidade(payload.modalidade_analise),
+            "separado_por_nivel": bool(payload.separado_por_nivel),
             "erro": "",
         }
         with state.jobs_lock:
@@ -701,6 +786,7 @@ def make_app(run_path: Path, engine: str = "polars") -> FastAPI:
                     secoes_por_uf=payload.secoes_por_uf,
                     duckdb_threads=payload.duckdb_threads,
                     query_engine=payload.engine,
+                    pdf_separado_por_nivel=bool(payload.separado_por_nivel),
                     log_dir=str(log_dir),
                     quiet=payload.quiet,
                 )

@@ -39,14 +39,23 @@ TABLE_CANDIDATES: dict[str, list[str]] = {
     "perfil_eleitor_brasil": ["ouro/brasil/perfil_eleitor"],
     "perfil_eleitor_estado": ["ouro/estadual/perfil_eleitor"],
     "perfil_eleitor_municipio": ["ouro/municipal/perfil_eleitor"],
+    "contagem_colunas_perfil_eleitor_brasil": ["ouro/brasil/contagem_colunas_perfil_eleitor"],
+    "contagem_colunas_perfil_eleitor_estado": ["ouro/estadual/contagem_colunas_perfil_eleitor"],
+    "contagem_colunas_perfil_eleitor_municipio": ["ouro/municipal/contagem_colunas_perfil_eleitor"],
     "perfil_ano": ["ouro/perfil_eleitor_por_ano", "ouro/brasil/perfil_eleitor", "ouro/estadual/perfil_eleitor", "ouro/municipal/perfil_eleitor", "ouro/perfil_eleitor_por_ano.parquet"],
     "perfil_partido_brasil": ["ouro/brasil/perfil_partido"],
     "perfil_partido_estado": ["ouro/estadual/perfil_partido"],
     "perfil_partido_municipio": ["ouro/municipal/perfil_partido"],
+    "contagem_colunas_perfil_partido_brasil": ["ouro/brasil/contagem_colunas_perfil_partido"],
+    "contagem_colunas_perfil_partido_estado": ["ouro/estadual/contagem_colunas_perfil_partido"],
+    "contagem_colunas_perfil_partido_municipio": ["ouro/municipal/contagem_colunas_perfil_partido"],
     "perfil_partido": ["ouro/brasil/perfil_partido", "ouro/estadual/perfil_partido", "ouro/municipal/perfil_partido", "ouro/perfil_eleitor_por_partido", "ouro/perfil_eleitor_por_partido.parquet"],
     "perfil_candidato_brasil": ["ouro/brasil/perfil_candidato"],
     "perfil_candidato_estado": ["ouro/estadual/perfil_candidato"],
     "perfil_candidato_municipio": ["ouro/municipal/perfil_candidato"],
+    "contagem_colunas_perfil_candidato_brasil": ["ouro/brasil/contagem_colunas_perfil_candidato"],
+    "contagem_colunas_perfil_candidato_estado": ["ouro/estadual/contagem_colunas_perfil_candidato"],
+    "contagem_colunas_perfil_candidato_municipio": ["ouro/municipal/contagem_colunas_perfil_candidato"],
     "perfil_candidato": ["ouro/brasil/perfil_candidato", "ouro/estadual/perfil_candidato", "ouro/municipal/perfil_candidato", "ouro/perfil_eleitor_por_candidato", "ouro/perfil_eleitor_por_candidato.parquet"],
     "resultado_partido_brasil": ["ouro/brasil/resultado_partido"],
     "resultado_partido_estado": ["ouro/estadual/resultado_partido"],
@@ -63,10 +72,16 @@ TABLE_CANDIDATES: dict[str, list[str]] = {
     "cluster_voter_brasil": ["ouro/brasil/clusters_eleitores"],
     "cluster_voter_estado": ["ouro/estadual/clusters_eleitores"],
     "cluster_voter_municipio": ["ouro/municipal/clusters_eleitores"],
+    "contagem_colunas_clusters_eleitores_brasil": ["ouro/brasil/contagem_colunas_clusters_eleitores"],
+    "contagem_colunas_clusters_eleitores_estado": ["ouro/estadual/contagem_colunas_clusters_eleitores"],
+    "contagem_colunas_clusters_eleitores_municipio": ["ouro/municipal/contagem_colunas_clusters_eleitores"],
     "cluster_voter_personas": ["ouro/brasil/clusters_eleitores", "ouro/estadual/clusters_eleitores", "ouro/municipal/clusters_eleitores"],
     "cluster_result_brasil": ["ouro/brasil/clusters_eleitores_resultado"],
     "cluster_result_estado": ["ouro/estadual/clusters_eleitores_resultado"],
     "cluster_result_municipio": ["ouro/municipal/clusters_eleitores_resultado"],
+    "contagem_colunas_clusters_eleitores_resultado_brasil": ["ouro/brasil/contagem_colunas_clusters_eleitores_resultado"],
+    "contagem_colunas_clusters_eleitores_resultado_estado": ["ouro/estadual/contagem_colunas_clusters_eleitores_resultado"],
+    "contagem_colunas_clusters_eleitores_resultado_municipio": ["ouro/municipal/contagem_colunas_clusters_eleitores_resultado"],
     "cluster_result_personas": ["ouro/brasil/clusters_eleitores_resultado", "ouro/estadual/clusters_eleitores_resultado", "ouro/municipal/clusters_eleitores_resultado"],
     "banco_prata_eleitorado": ["prata/eleitorado"],
     "banco_prata_candidatos": ["prata/candidatos"],
@@ -86,14 +101,23 @@ TABLE_LABELS: dict[str, str] = {
     "perfil_eleitor_brasil": "Ouro - perfil do eleitor Brasil",
     "perfil_eleitor_estado": "Ouro - perfil do eleitor por estado",
     "perfil_eleitor_municipio": "Ouro - perfil do eleitor por municipio",
+    "contagem_colunas_perfil_eleitor_brasil": "Ouro - histogramas do eleitor Brasil",
+    "contagem_colunas_perfil_eleitor_estado": "Ouro - histogramas do eleitor por estado",
+    "contagem_colunas_perfil_eleitor_municipio": "Ouro - histogramas do eleitor por municipio",
     "perfil_ano": "Ouro - perfil do eleitor por ano",
     "perfil_partido_brasil": "Ouro - perfil por partido Brasil",
     "perfil_partido_estado": "Ouro - perfil por partido estado",
     "perfil_partido_municipio": "Ouro - perfil por partido municipio",
+    "contagem_colunas_perfil_partido_brasil": "Ouro - histogramas do eleitor por partido Brasil",
+    "contagem_colunas_perfil_partido_estado": "Ouro - histogramas do eleitor por partido estado",
+    "contagem_colunas_perfil_partido_municipio": "Ouro - histogramas do eleitor por partido municipio",
     "perfil_partido": "Ouro - perfil do eleitor por partido",
     "perfil_candidato_brasil": "Ouro - perfil por candidato Brasil",
     "perfil_candidato_estado": "Ouro - perfil por candidato estado",
     "perfil_candidato_municipio": "Ouro - perfil por candidato municipio",
+    "contagem_colunas_perfil_candidato_brasil": "Ouro - histogramas do eleitor por candidato Brasil",
+    "contagem_colunas_perfil_candidato_estado": "Ouro - histogramas do eleitor por candidato estado",
+    "contagem_colunas_perfil_candidato_municipio": "Ouro - histogramas do eleitor por candidato municipio",
     "perfil_candidato": "Ouro - perfil do eleitor por candidato",
     "resultado_partido_brasil": "Ouro - votos por partido Brasil",
     "resultado_partido_estado": "Ouro - votos por partido estado",
@@ -110,10 +134,16 @@ TABLE_LABELS: dict[str, str] = {
     "cluster_voter_brasil": "Clusters - eleitores Brasil",
     "cluster_voter_estado": "Clusters - eleitores por estado",
     "cluster_voter_municipio": "Clusters - eleitores por municipio",
+    "contagem_colunas_clusters_eleitores_brasil": "Histogramas - clusters de eleitores Brasil",
+    "contagem_colunas_clusters_eleitores_estado": "Histogramas - clusters de eleitores por estado",
+    "contagem_colunas_clusters_eleitores_municipio": "Histogramas - clusters de eleitores por municipio",
     "cluster_voter_personas": "Clusters - eleitorado discreto",
     "cluster_result_brasil": "Clusters - eleitores + resultado Brasil",
     "cluster_result_estado": "Clusters - eleitores + resultado por estado",
     "cluster_result_municipio": "Clusters - eleitores + resultado por municipio",
+    "contagem_colunas_clusters_eleitores_resultado_brasil": "Histogramas - clusters eleitor + resultado Brasil",
+    "contagem_colunas_clusters_eleitores_resultado_estado": "Histogramas - clusters eleitor + resultado por estado",
+    "contagem_colunas_clusters_eleitores_resultado_municipio": "Histogramas - clusters eleitor + resultado por municipio",
     "cluster_result_personas": "Clusters - eleitorado + resultado",
     "banco_prata_eleitorado": "Prata - eleitorado limpo",
     "banco_prata_candidatos": "Prata - candidatos limpos",
@@ -247,8 +277,13 @@ class PolarsStore:
             return None
         if path.is_dir():
             return pl.scan_parquet(str(path / "**" / "*.parquet"), hive_partitioning=True)
-        if path.suffix.lower() == ".parquet":
-            return pl.scan_parquet(str(path), hive_partitioning=True)
+        suffix = path.suffix.lower()
+        if suffix in {".csv", ".txt"}:
+            return pl.scan_csv(str(path), separator=";", ignore_errors=True, infer_schema_length=5000)
+        # A camada ouro nivelada grava alguns Parquets como arquivos sem extensao
+        # (ex.: ouro/brasil/resumo). Esses arquivos nao podem cair no leitor CSV.
+        if suffix in {"", ".parquet"}:
+            return pl.scan_parquet(str(path), hive_partitioning=False)
         return pl.scan_csv(str(path), separator=";", ignore_errors=True, infer_schema_length=5000)
 
     def columns(self, key: str) -> list[str]:
@@ -310,6 +345,53 @@ class PolarsStore:
             if name in cols:
                 return name
         return None
+
+    def _status_col(self, cols: list[str]) -> str | None:
+        return self._first_col(
+            cols,
+            [
+                "resultado_eleitoral",
+                "situacao_eleitoral",
+                "situacao_total",
+                "situacao",
+                "ds_sit_tot_turno",
+                "situacao_turno",
+                "status_eleicao",
+                "turno",
+            ],
+        )
+
+    def _with_winner_priority(self, lf: Any, cols: list[str]) -> tuple[Any, list[str]]:
+        status_col = self._status_col(cols)
+        if status_col:
+            status = pl.col(status_col).cast(pl.Utf8, strict=False).fill_null("").str.strip_chars()
+            lower = status.str.to_lowercase()
+            negative = (
+                lower.str.contains("nao eleito", literal=True)
+                | lower.str.contains("não eleito", literal=True)
+                | lower.str.contains("suplente", literal=True)
+            )
+            positive = lower.str.contains("eleito", literal=True) & (~negative)
+            lf = lf.with_columns(
+                pl.when(positive)
+                .then(pl.lit("eleito"))
+                .when(negative)
+                .then(pl.lit("nao_eleito"))
+                .otherwise(pl.lit("outro"))
+                .alias("resultado_eleitoral"),
+                pl.when(positive).then(pl.lit(1)).otherwise(pl.lit(0)).alias("_prioridade_eleito"),
+            )
+            return lf, list(dict.fromkeys([*cols, "resultado_eleitoral", "_prioridade_eleito"]))
+        rank_col = self._first_col(cols, ["rank_entidade", "rank_partido", "rank_candidato", "rank"])
+        if rank_col:
+            rank = pl.col(rank_col).cast(pl.Float64, strict=False)
+            elected = rank.eq(1)
+            lf = lf.with_columns(
+                pl.when(elected).then(pl.lit("vencedor_ranking")).otherwise(pl.lit("nao_vencedor_ranking")).alias("resultado_eleitoral"),
+                pl.when(elected).then(pl.lit(1)).otherwise(pl.lit(0)).alias("_prioridade_eleito"),
+            )
+            return lf, list(dict.fromkeys([*cols, "resultado_eleitoral", "_prioridade_eleito"]))
+        return lf, cols
 
     def _key_for_level(self, stem: str, nivel: str | None = None, uf: str | None = None, municipio: str | None = None) -> str:
         if nivel:
@@ -409,7 +491,30 @@ class PolarsStore:
         if sort_cols:
             descending = [False if c == "rank_perfil_ano" else True for c in sort_cols]
             lf = lf.sort(sort_cols, descending=descending)
-        selected = [c for c in ["nivel", "ano", "uf", "cd_municipio", "nm_municipio", "perfil_combinado", "share_perfil", "eleitorado", "rank_perfil_ano", "padrao_temporal", "descricao"] if c in cols]
+        selected = [
+            c
+            for c in [
+                "nivel",
+                "ano",
+                "uf",
+                "cd_municipio",
+                "nm_municipio",
+                "perfil_faixa_etaria",
+                "perfil_genero",
+                "perfil_instrucao",
+                "perfil_estado_civil",
+                "perfil_raca_cor",
+                "perfil_combinado",
+                "share_perfil",
+                "eleitorado",
+                "qtd_eleitores_perfil",
+                "histograma_qtd_pessoas",
+                "rank_perfil_ano",
+                "padrao_temporal",
+                "descricao",
+            ]
+            if c in cols
+        ]
         if not selected:
             return pl.DataFrame()
         return collect_lazy(lf.select(selected).limit(int(limit)))
@@ -571,10 +676,17 @@ class PolarsStore:
                 continue
             lf = lf.filter(self._meaningful_expr(party_col))
             lf = self._apply_filters(lf, cols, uf=uf, municipio=municipio, ano=ano)
+            lf, cols = self._with_winner_priority(lf, cols)
             metric = pl.col(metric_col).cast(pl.Float64, strict=False).sum().alias("votos_pred_2026") if metric_col else pl.len().alias("votos_pred_2026")
+            group_exprs = [pl.col(party_col).cast(pl.Utf8).alias("partido")]
+            if "resultado_eleitoral" in cols:
+                group_exprs.append(pl.col("resultado_eleitoral"))
+            aggs = [metric]
+            if "_prioridade_eleito" in cols:
+                aggs.append(pl.col("_prioridade_eleito").max().alias("_prioridade_eleito"))
             agg = (
-                lf.group_by(pl.col(party_col).cast(pl.Utf8).alias("partido"))
-                .agg(metric)
+                lf.group_by(*group_exprs)
+                .agg(aggs)
                 .filter(pl.col("votos_pred_2026") > 0)
                 .with_columns((pl.col("votos_pred_2026") / pl.col("votos_pred_2026").sum()).alias("share_pred_2026"))
                 .with_columns(
@@ -582,13 +694,39 @@ class PolarsStore:
                     pl.lit("dados reais ja processados").alias("forca_correlacao_historica"),
                     pl.lit("Resultado historico parcial/total conforme fatias concluidas da camada ouro ou prata.").alias("perfil_eleitor_2026"),
                 )
-                .sort("share_pred_2026", descending=True)
+                .sort([c for c in ["_prioridade_eleito", "share_pred_2026"] if c in cols or c == "share_pred_2026"], descending=True)
                 .limit(int(limit))
             )
             df = collect_lazy(agg)
             if df.height:
                 return df
         return pl.DataFrame()
+
+    def quick_party_results(self, nivel: str = "brasil", uf: str | None = None, municipio: str | None = None, ano: str | None = None, limit: int = 20) -> Any:
+        key = self._key_for_level("resultado_partido", nivel=nivel, uf=uf, municipio=municipio)
+        lf = self.scan(key)
+        cols = self.columns(key)
+        if lf is None:
+            return pl.DataFrame()
+        party_col = self._first_col(cols, ["partido", "entidade", "sg_partido", "nm_partido"])
+        metric_col = self._first_col(cols, ["share_votos", "votos", "qt_votos", "votos_pred_2026"])
+        if party_col is None:
+            return pl.DataFrame()
+        lf = self._apply_filters(lf, cols, uf=uf, municipio=municipio, ano=ano)
+        lf = lf.filter(self._meaningful_expr(party_col))
+        lf, cols = self._with_winner_priority(lf, cols)
+        if party_col != "partido":
+            lf = lf.with_columns(pl.col(party_col).cast(pl.Utf8).alias("partido"))
+            cols = cols + ["partido"]
+        if "share_votos" not in cols and metric_col:
+            lf = lf.with_columns(
+                (pl.col(metric_col).cast(pl.Float64, strict=False) / pl.col(metric_col).cast(pl.Float64, strict=False).sum()).alias("share_votos")
+            )
+            cols = cols + ["share_votos"]
+        selected = [c for c in ["nivel", "ano", "uf", "cd_municipio", "nm_municipio", "cargo", "turno", "resultado_eleitoral", "partido", "share_votos", "votos", "rank_entidade"] if c in cols]
+        sort_col = "share_votos" if "share_votos" in cols else (metric_col or "partido")
+        sort_cols = [c for c in ["_prioridade_eleito", sort_col] if c in cols or c == sort_col]
+        return collect_lazy(lf.select(selected + [c for c in ["_prioridade_eleito"] if c in cols]).sort(sort_cols, descending=True).drop([c for c in ["_prioridade_eleito"] if c in cols]).limit(int(limit)))
 
     def entity_results(
         self,
@@ -619,14 +757,14 @@ class PolarsStore:
             cols = cols + ["nivel"]
         lf = self._apply_filters(lf, cols, uf=uf, municipio=municipio, ano=ano)
         lf = lf.filter(self._meaningful_expr(entity_col))
+        lf, cols = self._with_winner_priority(lf, cols)
         if entity_col != "entidade":
             lf = lf.with_columns(pl.col(entity_col).cast(pl.Utf8).alias("entidade"))
             cols = cols + ["entidade"]
         order_col = metric_col or entity_col
-        if metric_col:
-            lf = lf.sort(metric_col, descending=True)
-        selected = [c for c in ["nivel", "ano", "uf", "cd_municipio", "nm_municipio", "cargo", "turno", "entidade", "tipo_entidade", "votos", "share_votos", "rank_entidade"] if c in cols or c == "entidade"]
-        return collect_lazy(lf.select(selected).limit(int(limit)))
+        selected = [c for c in ["nivel", "ano", "uf", "cd_municipio", "nm_municipio", "cargo", "turno", "resultado_eleitoral", "entidade", "tipo_entidade", "votos", "share_votos", "rank_entidade"] if c in cols or c == "entidade"]
+        sort_cols = [c for c in ["_prioridade_eleito", metric_col or entity_col] if c and (c in cols or c == entity_col)]
+        return collect_lazy(lf.select(selected + [c for c in ["_prioridade_eleito"] if c in cols]).sort(sort_cols, descending=True).drop([c for c in ["_prioridade_eleito"] if c in cols]).limit(int(limit)))
 
     def entity_profiles(
         self,

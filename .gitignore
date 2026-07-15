@@ -23,12 +23,14 @@ Thumbs.db
 
 # Large electoral data, local databases and generated artifacts
 dados/*
-!dados/.gitkeep
+dados/**/
+dados/**/*.parquet
+dados/.gitkeep
+*.parquet
 *.zip
 *.csv
 *.jsonl
 *.ndjson
-*.parquet
 *.pdf
 *.sqlite
 *.duckdb

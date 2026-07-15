@@ -185,30 +185,45 @@ dados/banco_eleitoral/ouro/
   municipal/
     resumo/
     perfil_eleitor/
+    contagem_colunas_perfil_eleitor/
     resultado_partido/
     perfil_partido/
+    contagem_colunas_perfil_partido/
     resultado_candidato/
     perfil_candidato/
+    contagem_colunas_perfil_candidato/
     clusters_eleitores/
+    contagem_colunas_clusters_eleitores/
     clusters_eleitores_resultado/
+    contagem_colunas_clusters_eleitores_resultado/
   estadual/
     resumo/
     perfil_eleitor/
+    contagem_colunas_perfil_eleitor/
     resultado_partido/
     perfil_partido/
+    contagem_colunas_perfil_partido/
     resultado_candidato/
     perfil_candidato/
+    contagem_colunas_perfil_candidato/
     clusters_eleitores/
+    contagem_colunas_clusters_eleitores/
     clusters_eleitores_resultado/
+    contagem_colunas_clusters_eleitores_resultado/
   brasil/
     resumo/
     perfil_eleitor/
+    contagem_colunas_perfil_eleitor/
     resultado_partido/
     perfil_partido/
+    contagem_colunas_perfil_partido/
     resultado_candidato/
     perfil_candidato/
+    contagem_colunas_perfil_candidato/
     clusters_eleitores/
+    contagem_colunas_clusters_eleitores/
     clusters_eleitores_resultado/
+    contagem_colunas_clusters_eleitores_resultado/
   timeline_uf/
   timeline_municipal/
   timeline_nacional.parquet
@@ -225,6 +240,90 @@ A ideia correta da `ouro` e:
 3. subir de municipio para estado;
 4. subir de estado para Brasil;
 5. evitar varrer os dados brutos repetidamente.
+
+### Tabelas Auxiliares De Contabilidade E Histogramas
+
+A camada `ouro` tambem gera tabelas auxiliares chamadas `contagem_colunas_*`. Elas existem para que graficos, dashboard e PDF nao precisem recalcular histogramas em cima de tabelas grandes.
+
+Essas tabelas sao a base dos histogramas. Cada linha representa uma contagem de uma dimensao discreta:
+
+```text
+nivel
+ano
+uf
+cd_municipio
+nm_municipio
+dimensao_perfil
+valor_perfil
+qtd_pessoas ou qtd_votos
+share_histograma
+rank_histograma
+grafico_sugerido
+descricao
+```
+
+As dimensoes discretas contabilizadas sao:
+
+```text
+perfil_combinado
+faixa_etaria
+sexo_genero
+escolaridade
+estado_civil
+raca_cor
+```
+
+Valores nulos, vazios, `sem valor`, `nao informado`, `#NULO#` e equivalentes sao descartados antes de gravar essas tabelas. Portanto, o front e o PDF nao devem precisar filtrar lixo depois.
+
+Arquivos gerados:
+
+```text
+ouro/municipal/contagem_colunas_perfil_eleitor/
+ouro/municipal/contagem_colunas_perfil_partido/
+ouro/municipal/contagem_colunas_perfil_candidato/
+ouro/municipal/contagem_colunas_clusters_eleitores/
+ouro/municipal/contagem_colunas_clusters_eleitores_resultado/
+
+ouro/estadual/contagem_colunas_perfil_eleitor/
+ouro/estadual/contagem_colunas_perfil_partido/
+ouro/estadual/contagem_colunas_perfil_candidato/
+ouro/estadual/contagem_colunas_clusters_eleitores/
+ouro/estadual/contagem_colunas_clusters_eleitores_resultado/
+
+ouro/brasil/contagem_colunas_perfil_eleitor/
+ouro/brasil/contagem_colunas_perfil_partido/
+ouro/brasil/contagem_colunas_perfil_candidato/
+ouro/brasil/contagem_colunas_clusters_eleitores/
+ouro/brasil/contagem_colunas_clusters_eleitores_resultado/
+```
+
+Como interpretar:
+
+- `contagem_colunas_perfil_eleitor`: quantas pessoas existem em cada perfil/dimensao do eleitorado;
+- `contagem_colunas_perfil_partido`: dentro de cada partido, qual perfil de eleitor aparece associado aos votos daquele partido;
+- `contagem_colunas_perfil_candidato`: dentro de cada candidato, qual perfil aparece associado aos votos daquele candidato;
+- `contagem_colunas_clusters_eleitores`: histograma dos campos discretos dentro dos clusters de eleitores;
+- `contagem_colunas_clusters_eleitores_resultado`: histograma dos clusters que combinam perfil de eleitor e resultado/partido.
+
+Para eleitor, as tabelas trazem tambem comparecimento:
+
+```text
+qtd_pessoas
+comparecimento_estimado
+abstencao_estimado
+taxa_comparecimento
+taxa_abstencao
+```
+
+Para partido/candidato, a metrica central e:
+
+```text
+qtd_votos
+share_histograma
+resultado_eleitoral
+```
+
+`resultado_eleitoral` separa vencedores e nao vencedores quando a camada de resultado ja conseguiu rankear a disputa.
 
 ## Campos Mais Importantes
 
@@ -547,6 +646,81 @@ python3 scripts/run_pipeline_eleitoral_json.py dados/banco_eleitoral \
   --banco-ouro-workers 1 \
   --banco-duckdb-threads 1 \
   --cenarios 100
+```
+
+## Atualizar Apenas Histogramas E Contagens Pendentes
+
+As tabelas `contagem_colunas_*` sao tarefas da camada `ouro`. Quando voce usa `--resume`, o pipeline consulta os marcadores de progresso em `dados/banco_eleitoral/logs/ouro/` e pula as tarefas antigas que ja terminaram. Portanto, se o banco ja tem os dados principais processados, ele tende a executar apenas as tabelas novas ou pendentes.
+
+Use este comando para gerar/atualizar contagens de Brasil + estados:
+
+```bash
+python3 scripts/run_pipeline_eleitoral_json.py dados/banco_eleitoral \
+  --modo analise_banco \
+  --banco-out dados/banco_eleitoral \
+  --resume \
+  --banco-modalidade-analise estados_brasil \
+  --banco-somente-estados-brasil \
+  --banco-skip-heavy-analyses \
+  --banco-skip-clusters \
+  --sem-clustering \
+  --banco-ouro-workers 1 \
+  --banco-duckdb-threads 1 \
+  --cenarios 100
+```
+
+Use este comando para gerar/atualizar contagens por partido:
+
+```bash
+python3 scripts/run_pipeline_eleitoral_json.py dados/banco_eleitoral \
+  --modo analise_banco \
+  --banco-out dados/banco_eleitoral \
+  --resume \
+  --banco-modalidade-analise eleitor_partido \
+  --banco-skip-clusters \
+  --sem-clustering \
+  --banco-ouro-workers 1 \
+  --banco-duckdb-threads 1 \
+  --cenarios 50
+```
+
+Use este comando para gerar/atualizar contagens por partido e candidato:
+
+```bash
+python3 scripts/run_pipeline_eleitoral_json.py dados/banco_eleitoral \
+  --modo analise_banco \
+  --banco-out dados/banco_eleitoral \
+  --resume \
+  --banco-modalidade-analise eleitor_candidato_partido \
+  --banco-skip-clusters \
+  --sem-clustering \
+  --banco-ouro-workers 1 \
+  --banco-duckdb-threads 1 \
+  --cenarios 100
+```
+
+Use este comando quando quiser incluir histogramas de clusters:
+
+```bash
+python3 scripts/run_pipeline_eleitoral_json.py dados/banco_eleitoral \
+  --modo analise_banco \
+  --banco-out dados/banco_eleitoral \
+  --resume \
+  --banco-modalidade-analise completa \
+  --cluster-min-k 2 \
+  --cluster-max-k 10 \
+  --banco-ouro-workers 1 \
+  --banco-duckdb-threads 1 \
+  --cenarios 3000
+```
+
+Se uma tabela antiga aparecer como `Pulando tarefa ouro ja concluida`, isso e esperado. O ponto importante e observar no log tarefas com nomes como:
+
+```text
+contagem_colunas_perfil_eleitor
+contagem_colunas_perfil_partido
+contagem_colunas_perfil_candidato
+contagem_colunas_clusters_eleitores
 ```
 
 ## Dashboard Com API + Streamlit
@@ -875,6 +1049,32 @@ python3 scripts/gerar_relatorio_pdf_eleitoral.py \
   --municipios-por-uf 0 \
   --query-engine polars \
   --duckdb-threads 1
+```
+
+PDFs separados por nivel, sempre na ordem Brasil -> estados -> municipios:
+
+```bash
+python3 scripts/gerar_relatorio_pdf_eleitoral.py \
+  --run dados/banco_eleitoral \
+  --out resultados/pdfs_por_nivel/relatorio.pdf \
+  --modalidade-analise estados_brasil \
+  --pdf-separado-por-nivel \
+  --max-pages 120 \
+  --top-n 20 \
+  --municipios-por-uf 0 \
+  --query-engine polars \
+  --duckdb-threads 1
+```
+
+Quando a modalidade incluir municipio e `--municipios-por-uf` for maior que zero, o mesmo comando gera:
+
+```text
+00_brasil.pdf
+01_estado_ac.pdf
+02_estado_al.pdf
+...
+01_001_municipio_ac_<codigo>.pdf
+manifesto_pdfs.json
 ```
 
 PDF `eleitor`:
